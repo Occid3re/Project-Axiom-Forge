@@ -1,4 +1,4 @@
-export { GENOME_LENGTH, Gene, ActionType, ResourceDist, MAX_ENTITIES } from './constants';
+export { GENOME_LENGTH, ActionType, ResourceDist, MAX_ENTITIES } from './constants';
 export { EntityPool } from './entity-pool';
 export { World, type WorldSnapshot, type WorldHistory, type WorldConfig } from './world';
 export { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws } from './world-laws';
