@@ -1,41 +1,31 @@
-/**
- * WebGL canvas component for rendering a single world.
- */
-
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 import { WorldRenderer } from '../renderer';
 import type { World } from '../../engine';
 
 interface WorldViewProps {
   world: World | null;
-  size?: number;
+  size: number;
 }
 
-export function WorldView({ world, size = 512 }: WorldViewProps) {
+export function WorldView({ world, size }: WorldViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<WorldRenderer | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     try {
       rendererRef.current = new WorldRenderer(canvas);
       rendererRef.current.resize(size, size);
     } catch (e) {
-      console.error('WebGL init failed:', e);
+      console.error('WebGL init:', e);
     }
-
-    return () => {
-      rendererRef.current?.destroy();
-      rendererRef.current = null;
-    };
+    return () => { rendererRef.current?.destroy(); rendererRef.current = null; };
   }, [size]);
 
   useEffect(() => {
     if (!world || !rendererRef.current) return;
-    const state = world.getVisualState();
-    rendererRef.current.update(state);
+    rendererRef.current.update(world.getVisualState());
   }, [world]);
 
   return (
@@ -43,8 +33,8 @@ export function WorldView({ world, size = 512 }: WorldViewProps) {
       ref={canvasRef}
       width={size}
       height={size}
-      className="rounded-lg border border-gray-700 shadow-xl"
-      style={{ imageRendering: 'pixelated' }}
+      style={{ imageRendering: 'pixelated', width: size, height: size }}
+      className="block"
     />
   );
 }
