@@ -2,9 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'axiom-forge',
-      script: 'index.ts',
-      interpreter: 'node',
-      interpreter_args: '--import tsx/esm',
+      script: 'dist/server.mjs',
       cwd: '/opt/axiom-forge/server',
       env: { NODE_ENV: 'production', PORT: '3001' },
       restart_delay: 3000,
