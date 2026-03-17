@@ -20,13 +20,25 @@ npm run build
 
 echo ""
 echo "==> Preparing remote directory..."
-ssh "${DEPLOY_HOST}" "mkdir -p ${DEPLOY_DIR}"
+ssh "${DEPLOY_HOST}" "mkdir -p ${DEPLOY_DIR}/dist"
 
-echo "==> Uploading dist..."
-rsync -az --delete dist/ "${DEPLOY_HOST}:${DEPLOY_DIR}/dist/"
+# Use rsync if available, fall back to tar+ssh
+if command -v rsync &>/dev/null; then
+  echo "==> Uploading dist (rsync)..."
+  rsync -az --delete dist/ "${DEPLOY_HOST}:${DEPLOY_DIR}/dist/"
 
-echo "==> Updating nginx config..."
-rsync -az ops/nginx/lostuplink.conf "${DEPLOY_HOST}:/etc/nginx/sites-available/lostuplink.conf"
+  echo "==> Updating nginx config..."
+  rsync -az ops/nginx/lostuplink.conf "${DEPLOY_HOST}:/etc/nginx/sites-available/lostuplink.conf"
+else
+  echo "==> Uploading dist (tar over ssh)..."
+  # Clean remote dist first, then upload
+  ssh "${DEPLOY_HOST}" "rm -rf ${DEPLOY_DIR}/dist/*"
+  tar -czf - -C dist . | ssh "${DEPLOY_HOST}" "tar -xzf - -C ${DEPLOY_DIR}/dist/"
+
+  echo "==> Updating nginx config..."
+  cat ops/nginx/lostuplink.conf | ssh "${DEPLOY_HOST}" "cat > /etc/nginx/sites-available/lostuplink.conf"
+fi
+
 ssh "${DEPLOY_HOST}" "ln -sfn /etc/nginx/sites-available/lostuplink.conf /etc/nginx/sites-enabled/lostuplink.conf"
 
 echo "==> Testing nginx config..."
