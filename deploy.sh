@@ -1,54 +1,41 @@
 #!/usr/bin/env bash
-# deploy.sh — Deploy LostUplink: Axiom Forge to production
-# Replaces the old Signal Lost game entirely.
-#
-# Usage:
-#   ./deploy.sh
-#
-# Prerequisites:
-#   - SSH access to lostuplink-prod (configured in ~/.ssh/config)
-#   - npm installed locally
+# deploy.sh — Deploy LostUplink: Axiom Forge
+# Server-side simulation + client viewer.
 
 set -euo pipefail
 
 DEPLOY_HOST="${DEPLOY_HOST:-lostuplink-prod}"
 DEPLOY_DIR="/opt/axiom-forge"
 
-echo "==> Building Axiom Forge..."
+echo "==> Building client..."
 npm install --silent
 npm run build
 
 echo ""
-echo "==> Preparing remote directory..."
-ssh "${DEPLOY_HOST}" "mkdir -p ${DEPLOY_DIR}/dist"
+echo "==> Preparing remote directories..."
+ssh "${DEPLOY_HOST}" "mkdir -p ${DEPLOY_DIR}/dist ${DEPLOY_DIR}/server ${DEPLOY_DIR}/src/engine"
 
-# Use rsync if available, fall back to tar+ssh
-if command -v rsync &>/dev/null; then
-  echo "==> Uploading dist (rsync)..."
-  rsync -az --delete dist/ "${DEPLOY_HOST}:${DEPLOY_DIR}/dist/"
+echo "==> Uploading client dist..."
+tar -czf - -C dist . | ssh "${DEPLOY_HOST}" "rm -rf ${DEPLOY_DIR}/dist/* && tar -xzf - -C ${DEPLOY_DIR}/dist/"
 
-  echo "==> Updating nginx config..."
-  rsync -az ops/nginx/lostuplink.conf "${DEPLOY_HOST}:/etc/nginx/sites-available/lostuplink.conf"
-else
-  echo "==> Uploading dist (tar over ssh)..."
-  # Clean remote dist first, then upload
-  ssh "${DEPLOY_HOST}" "rm -rf ${DEPLOY_DIR}/dist/*"
-  tar -czf - -C dist . | ssh "${DEPLOY_HOST}" "tar -xzf - -C ${DEPLOY_DIR}/dist/"
+echo "==> Uploading server..."
+tar -czf - -C server . | ssh "${DEPLOY_HOST}" "tar -xzf - -C ${DEPLOY_DIR}/server/"
 
-  echo "==> Updating nginx config..."
-  cat ops/nginx/lostuplink.conf | ssh "${DEPLOY_HOST}" "cat > /etc/nginx/sites-available/lostuplink.conf"
-fi
+echo "==> Uploading engine (shared with server)..."
+tar -czf - -C src/engine . | ssh "${DEPLOY_HOST}" "tar -xzf - -C ${DEPLOY_DIR}/src/engine/"
 
-ssh "${DEPLOY_HOST}" "ln -sfn /etc/nginx/sites-available/lostuplink.conf /etc/nginx/sites-enabled/lostuplink.conf"
+echo "==> Installing server dependencies..."
+ssh "${DEPLOY_HOST}" "cd ${DEPLOY_DIR}/server && npm install --omit=dev --silent"
 
-echo "==> Testing nginx config..."
-ssh "${DEPLOY_HOST}" "nginx -t"
+echo "==> Updating nginx config..."
+cat ops/nginx/lostuplink.conf | ssh "${DEPLOY_HOST}" "cat > /etc/nginx/sites-available/lostuplink.conf"
+ssh "${DEPLOY_HOST}" "ln -sfn /etc/nginx/sites-available/lostuplink.conf /etc/nginx/sites-enabled/lostuplink.conf && nginx -t"
 
 echo "==> Reloading nginx..."
 ssh "${DEPLOY_HOST}" "systemctl reload nginx"
 
-echo "==> Stopping old Signal Lost PM2 process (if running)..."
-ssh "${DEPLOY_HOST}" "pm2 delete signal-lost 2>/dev/null && pm2 save || echo 'No signal-lost process found, skipping'"
+echo "==> Starting/restarting simulation server (PM2)..."
+ssh "${DEPLOY_HOST}" "cd ${DEPLOY_DIR}/server && pm2 delete axiom-forge 2>/dev/null || true && pm2 start ecosystem.config.cjs && pm2 save"
 
 echo ""
-echo "Deploy complete! Site live at https://lostuplink.com"
+echo "Deploy complete! Live at https://lostuplink.com"
