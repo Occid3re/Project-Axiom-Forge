@@ -84,6 +84,11 @@ const SCENE_FRAG = `
     // Trail — faint green cytoplasm residue
     color += vec3(0.01, 0.22, 0.09) * trail.r * 0.38;
 
+    // World boundary — black void outside the simulation when zoomed out
+    float inWorld = step(0.0, wuv.x) * (1.0 - step(1.0, wuv.x))
+                  * step(0.0, wuv.y) * (1.0 - step(1.0, wuv.y));
+    color *= inWorld;
+
     // Vignette — always canvas-relative, independent of zoom/pan
     vec2 uvc = v_uv - 0.5;
     float vig = clamp(1.0 - dot(uvc, uvc) * 1.8, 0.0, 1.0);
@@ -336,9 +341,9 @@ export class WorldRenderer {
 
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
-          // Toroidal wrap — matches REPEAT texture tiling when zoomed out
-          const nx = ((cx + dx) % W + W) % W;
-          const ny = ((cy + dy) % H + H) % H;
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
 
           const rr = Math.sqrt(dx * dx + dy * dy);
           if (rr > scanR) continue;
@@ -530,9 +535,8 @@ export class WorldRenderer {
     const { gl } = this;
     const tex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    // REPEAT so zoomed-out views tile the world seamlessly (world is toroidal)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     return tex;

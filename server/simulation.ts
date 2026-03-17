@@ -33,8 +33,8 @@ const EVAL_CONFIG = {
 };
 
 const DISPLAY_CONFIG = {
-  gridSize: 128,            // larger grid for display
-  initialEntities: 90,
+  gridSize: 256,            // larger grid for display
+  initialEntities: 180,
   // Minimum display-world lifetime before it can be replaced by a new best.
   // At 30fps, 240 ticks ≈ 8 seconds — enough to see the world, not so long we're stuck with a bad one.
   minLifetimeTicks: 240,
