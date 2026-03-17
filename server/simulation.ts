@@ -189,8 +189,9 @@ export interface MetaBroadcast {
   generations:  Array<{ gen: number; best: number; avg: number }>;
   logEntry:     string | null;
   gridSize:     number;
-  evalSpeed:    number;  // effective eval ticks/sec (across all workers)
-  serverMs:     number;  // EMA of display world step time (ms)
+  evalSpeed:    number;       // effective eval ticks/sec (across all workers)
+  serverMs:     number;       // EMA of display world step time (ms)
+  sampleGenome?: number[];    // 80 MLP weights of the most-energetic display entity
 }
 
 // ── Main controller ─────────────────────────────────────────────────────────
@@ -453,6 +454,19 @@ export class SimulationController {
       this.startDisplayWorld(this.bestLaws);
     }
 
+    // Grab genome of the most-energetic entity for neural-net visualisation
+    let sampleGenome: number[] | undefined;
+    if (world.entities.count > 0) {
+      let bestEnergy = -1, bestIdx = 0;
+      for (let i = 0; i < world.entities.count; i++) {
+        if (world.entities.energy[i] > bestEnergy) {
+          bestEnergy = world.entities.energy[i];
+          bestIdx = i;
+        }
+      }
+      sampleGenome = Array.from(world.entities.getGenome(bestIdx));
+    }
+
     const frame: ArrayBuffer = packFrame(world, this.displayTick);
     const meta: MetaBroadcast = {
       generation:  this.generation,
@@ -466,8 +480,9 @@ export class SimulationController {
       generations: this.generationSummaries,
       logEntry:    this.pendingLog,
       gridSize:    DISPLAY_CONFIG.gridSize,
-      evalSpeed:   this.evalSpeedSample,
-      serverMs:    this.displayStepMs,
+      evalSpeed:    this.evalSpeedSample,
+      serverMs:     this.displayStepMs,
+      sampleGenome,
     };
     this.pendingLog = null;
     return { frame, meta };

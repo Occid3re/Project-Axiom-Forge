@@ -65,4 +65,5 @@ export interface ServerMeta {
   gridSize: number;
   evalSpeed?: number;
   serverMs?: number;       // EMA ms per display step — server load indicator
+  sampleGenome?: number[]; // 80 MLP weights of the most-energetic display entity
 }

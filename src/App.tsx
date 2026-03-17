@@ -12,6 +12,7 @@ import { EmergenceLadder, detectEmergence, type EmergenceState } from './ui/comp
 import { TransmissionLog } from './ui/components/TransmissionLog';
 import { PopulationChart } from './ui/components/PopulationChart';
 import { WorldLawsView } from './ui/components/WorldLawsView';
+import { NeuralNetView } from './ui/components/NeuralNetView';
 
 // ---- Types -----------------------------------------------------------------
 
@@ -78,7 +79,8 @@ function EpilepsyGate({ onEnter }: { onEnter: () => void }) {
 // ---- App -------------------------------------------------------------------
 
 export default function App() {
-  const [entered, setEntered] = useState(false);
+  const [entered, setEntered]         = useState(false);
+  const [viewMode, setViewMode]       = useState<'simulation' | 'network'>('simulation');
 
   // Frame stored in a ref — bypasses React state so the RAF render loop
   // in WorldView reads it directly without triggering re-renders.
@@ -135,6 +137,8 @@ export default function App() {
     return () => { socket.disconnect(); };
   }, [addLog]);
 
+  const sampleGenome = meta?.sampleGenome ?? null;
+
   const pop      = meta?.population ?? 0;
   const gen      = meta?.generation ?? 0;
   const wIdx     = meta?.worldIndex ?? 0;
@@ -174,15 +178,34 @@ export default function App() {
           </div>
         )}
 
-        {/* Status */}
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-1.5 w-1.5">
-            {connected && <span className="animate-ping absolute inset-0 rounded-full bg-emerald-400 opacity-75" />}
-            <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${connected ? 'bg-emerald-500' : 'bg-red-600'}`} />
-          </span>
-          <span className="text-[9px] text-gray-600 uppercase tracking-widest hidden sm:inline">
-            {connected ? 'Live' : 'Offline'}
-          </span>
+        {/* Right cluster: view toggle + status */}
+        <div className="flex items-center gap-3">
+          {/* Neural net / simulation toggle */}
+          <button
+            onClick={() => setViewMode(v => v === 'simulation' ? 'network' : 'simulation')}
+            title={viewMode === 'simulation' ? 'View neural network X-ray' : 'View simulation'}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-semibold uppercase tracking-wider border transition-all duration-200
+              ${viewMode === 'network'
+                ? 'bg-cyan-500/15 border-cyan-500/50 text-cyan-400 shadow-[0_0_10px_rgba(0,229,255,0.15)]'
+                : 'bg-white/[0.03] border-white/[0.08] text-gray-500 hover:text-cyan-500/70 hover:border-cyan-500/20'}`}
+          >
+            {viewMode === 'network' ? (
+              <><span className="text-[11px]">⬡</span> Network</>
+            ) : (
+              <><span className="text-[11px]">⬡</span> Network</>
+            )}
+          </button>
+
+          {/* Connection status */}
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-1.5 w-1.5">
+              {connected && <span className="animate-ping absolute inset-0 rounded-full bg-emerald-400 opacity-75" />}
+              <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${connected ? 'bg-emerald-500' : 'bg-red-600'}`} />
+            </span>
+            <span className="text-[9px] text-gray-600 uppercase tracking-widest hidden sm:inline">
+              {connected ? 'Live' : 'Offline'}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -192,21 +215,28 @@ export default function App() {
         {/* Canvas area — sidebars overlay only THIS div, not the bottom strip */}
         <div className="flex-1 relative min-h-0">
 
-          {/* Full-bleed canvas */}
+          {/* Full-bleed canvas — simulation or network X-ray */}
           <div className="absolute inset-0 bg-[#070809]">
-            <WorldView frameRef={frameRef} className="w-full h-full" />
+            {viewMode === 'simulation' ? (
+              <>
+                <WorldView frameRef={frameRef} className="w-full h-full" />
 
-            {/* Extinction banner */}
-            {meta && pop === 0 && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="text-center">
-                  <div className="text-xl font-mono text-red-900/50 tracking-[0.4em] uppercase">Extinction</div>
-                  <div className="text-[9px] text-gray-700 mt-1 tracking-wider">Awaiting next world...</div>
-                </div>
-              </div>
+                {/* Extinction banner */}
+                {meta && pop === 0 && (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="text-center">
+                      <div className="text-xl font-mono text-red-900/50 tracking-[0.4em] uppercase">Extinction</div>
+                      <div className="text-[9px] text-gray-700 mt-1 tracking-wider">Awaiting next world...</div>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              /* Neural network X-ray view */
+              <NeuralNetView genome={sampleGenome} />
             )}
 
-            {/* Connection overlay */}
+            {/* Connection overlay — shown in both modes */}
             {!connected && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm">
                 <div className="text-center">
@@ -218,7 +248,9 @@ export default function App() {
 
             {/* Watermark */}
             <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[8px] text-gray-800 font-mono tracking-widest uppercase pointer-events-none whitespace-nowrap">
-              gen {gen + 1} · world {wIdx}/{wTot} · tick {tick}
+              {viewMode === 'simulation'
+                ? `gen ${gen + 1} · world ${wIdx}/${wTot} · tick ${tick}`
+                : `neural network · fittest entity · gen ${gen + 1}`}
             </div>
           </div>
 
