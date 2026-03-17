@@ -5,9 +5,25 @@
  *   - Display loop: replays best world in slow-motion (30 ticks/sec) for viewers
  */
 
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { World, type WorldSnapshot } from '../src/engine/world.ts';
 import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws, starterLaws } from '../src/engine/world-laws.ts';
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
+
+// ── State persistence ────────────────────────────────────────────────────────
+
+const STATE_PATH = process.env.STATE_PATH ?? './state.json';
+const STATE_VERSION = 2;
+
+interface SavedState {
+  version: number;
+  generation: number;
+  bestScore: number;
+  bestLaws: WorldLaws | null;
+  lastImprovementGen: number;
+  generationSummaries: Array<{ gen: number; best: number; avg: number }>;
+  population: WorldLaws[];
+}
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -153,8 +169,48 @@ export class SimulationController {
 
   constructor() {
     this.evalRng = new PRNG(Date.now());
+    this.loadState();
     this.initGeneration();
     this.log('Axiom Forge online — searching for emergent worlds');
+  }
+
+  // ── State persistence ───────────────────────────────────────────────────
+
+  private loadState() {
+    try {
+      if (!existsSync(STATE_PATH)) return;
+      const s: SavedState = JSON.parse(readFileSync(STATE_PATH, 'utf8'));
+      if (s.version !== STATE_VERSION) {
+        console.log(`[sim] State file version ${s.version} ≠ ${STATE_VERSION} — starting fresh`);
+        return;
+      }
+      this.generation        = s.generation;
+      this.bestScore         = s.bestScore;
+      this.bestLaws          = s.bestLaws;
+      this.lastImprovementGen = s.lastImprovementGen;
+      this.generationSummaries = s.generationSummaries ?? [];
+      this.population        = s.population ?? [];
+      console.log(`[sim] Restored: gen ${s.generation}, best ${s.bestScore.toFixed(3)}, pop ${this.population.length}`);
+    } catch (e) {
+      console.error('[sim] Failed to load state (starting fresh):', e);
+    }
+  }
+
+  private saveState() {
+    try {
+      const s: SavedState = {
+        version:              STATE_VERSION,
+        generation:           this.generation,
+        bestScore:            this.bestScore,
+        bestLaws:             this.bestLaws,
+        lastImprovementGen:   this.lastImprovementGen,
+        generationSummaries:  this.generationSummaries,
+        population:           this.population,
+      };
+      writeFileSync(STATE_PATH, JSON.stringify(s), 'utf8');
+    } catch (e) {
+      console.error('[sim] Failed to save state:', e);
+    }
   }
 
   // ── Eval loop (called rapidly via setInterval) ──────────────────────────
@@ -231,6 +287,7 @@ export class SimulationController {
       this.bestLaws = laws;
       this.lastImprovementGen = this.generation;
       this.log(`New best: ${scores.total.toFixed(3)} · Gen ${this.generation} · World ${this.worldIndex + 1}`);
+      this.saveState();
       // Only update display world if improvement is meaningful (>5%) AND current world
       // has been running long enough — prevents rapid flicker on early fast improvements.
       if (improvement >= EVAL_CONFIG.minImprovementRatio && this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) {
@@ -300,6 +357,7 @@ export class SimulationController {
     }
 
     this.generation++;
+    this.saveState();
     this.initGeneration();
   }
 
