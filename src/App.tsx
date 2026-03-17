@@ -255,14 +255,16 @@ export default function App() {
           </div>
 
           {/* Left sidebar — overlays canvas only, not bottom strip */}
-          <aside className="absolute left-0 top-0 bottom-0 hidden md:flex w-44 lg:w-52 z-10
-                            bg-black/60 backdrop-blur-md border-r border-white/[0.05]">
+          <aside className={`absolute left-0 top-0 bottom-0 w-44 lg:w-52 z-10
+                            bg-black/60 backdrop-blur-md border-r border-white/[0.05]
+                            ${viewMode === 'network' ? 'hidden' : 'hidden md:flex'}`}>
             <EmergenceLadder emergence={emergence} tick={tick} />
           </aside>
 
           {/* Right sidebar — overlays canvas only, fully scrollable */}
-          <aside className="absolute right-0 top-0 bottom-0 hidden lg:flex w-56 xl:w-64 flex-col z-10
-                            bg-black/60 backdrop-blur-md border-l border-white/[0.05] overflow-y-auto">
+          <aside className={`absolute right-0 top-0 bottom-0 w-56 xl:w-64 flex-col z-10
+                            bg-black/60 backdrop-blur-md border-l border-white/[0.05] overflow-y-auto
+                            ${viewMode === 'network' ? 'hidden' : 'hidden lg:flex'}`}>
             {/* Chart */}
             <div className="p-3 border-b border-white/[0.04] shrink-0">
               <h4 className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-2">Population</h4>
