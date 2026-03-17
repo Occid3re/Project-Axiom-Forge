@@ -134,6 +134,7 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
     };
 
     const onTouchStart = (e: TouchEvent) => {
+      e.preventDefault(); // block browser pinch-zoom fighting our handler
       if (e.touches.length === 2) {
         const t0 = e.touches[0], t1 = e.touches[1];
         const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
@@ -194,6 +195,7 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
           maxWidth: '100%',
           maxHeight: '100%',
           cursor: 'crosshair',
+          touchAction: 'none',   // hand all touch events to our handlers
         }}
         title="Scroll to zoom · Drag to pan · Double-click to reset"
       />

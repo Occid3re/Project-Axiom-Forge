@@ -187,30 +187,15 @@ export default function App() {
       </header>
 
       {/* ── Body ───────────────────────────────────────────────────── */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
+      {/* Canvas fills entire body; sidebars are absolute frosted-glass overlays */}
+      <div className="flex-1 relative min-h-0 overflow-hidden">
 
-        {/* Emergence Ladder — hidden on mobile, narrow on tablet */}
-        <aside className="hidden md:flex w-44 lg:w-52 shrink-0 border-r border-white/[0.03] bg-black/30">
-          <EmergenceLadder emergence={emergence} tick={tick} />
-        </aside>
+        {/* Canvas + bottom strip — absolute full-bleed center */}
+        <div className="absolute inset-0 flex flex-col">
 
-        {/* ── Center column ─────────────────────────────────────── */}
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
-
-          {/* World canvas — fills available space */}
+          {/* World canvas */}
           <div className="flex-1 relative bg-[#070809] min-h-0">
             <WorldView frameRef={frameRef} className="absolute inset-0" />
-
-            {/* Overlay: population counter */}
-            {pop > 0 && (
-              <div className="absolute top-2 right-3 text-right pointer-events-none">
-                <div className="text-2xl sm:text-3xl font-black font-mono tabular-nums leading-none"
-                  style={{ color: 'rgba(16,185,129,0.75)', textShadow: '0 0 16px rgba(16,185,129,0.3)' }}>
-                  {pop}
-                </div>
-                <div className="text-[8px] uppercase tracking-widest text-gray-700">entities</div>
-              </div>
-            )}
 
             {/* Extinction banner */}
             {meta && pop === 0 && (
@@ -232,15 +217,14 @@ export default function App() {
               </div>
             )}
 
-            {/* Watermark */}
-            <div className="absolute bottom-2 left-3 text-[8px] text-gray-800 font-mono tracking-widest uppercase pointer-events-none">
-              axiom-forge v0.1 · gen {gen} · world {wIdx}/{wTot} · tick {tick}
+            {/* Watermark — bottom-center, between sidebars */}
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[8px] text-gray-800 font-mono tracking-widest uppercase pointer-events-none whitespace-nowrap">
+              gen {gen + 1} · world {wIdx}/{wTot} · tick {tick}
             </div>
           </div>
 
-          {/* Bottom strip — stats + log */}
-          <div className="shrink-0 border-t border-white/[0.04] bg-black/40">
-            {/* Ambient stat row */}
+          {/* Bottom strip — full width, z-20 so it sits above sidebar overlays */}
+          <div className="shrink-0 border-t border-white/[0.04] bg-black/70 backdrop-blur-sm relative z-20">
             <div className="flex items-center justify-between px-3 sm:px-5 py-2 gap-2 overflow-x-auto">
               <Stat label="Gen"        value={gen + 1}             color="#06b6d4" />
               <div className="w-px h-6 bg-white/[0.05] shrink-0" />
@@ -267,41 +251,19 @@ export default function App() {
                 </div>
               )}
             </div>
-
-            {/* Log */}
             <TransmissionLog entries={log} />
           </div>
-
-          {/* Mobile info panel — compact laws + key stats, hidden on desktop */}
-          {laws && (
-            <div className="block lg:hidden shrink-0 border-t border-white/[0.04] bg-black/40 px-3 py-2">
-              <div className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-1.5">Evolved Physics</div>
-              <div className="grid grid-cols-3 gap-x-3 gap-y-1">
-                {([
-                  ['Eat Gain',   laws.eatGain,        1.0],
-                  ['Move Cost',  laws.moveCost,        0.1],
-                  ['Attack',     laws.attackTransfer,  0.8],
-                  ['Regen',      laws.resourceRegenRate, 0.1],
-                  ['Repro Cost', laws.reproductionCost, 1.0],
-                  ['Mutation',   laws.mutationRate,    0.5],
-                ] as [string, number, number][]).map(([label, val, max]) => (
-                  <div key={label} className="flex flex-col">
-                    <div className="flex justify-between">
-                      <span className="text-[7px] text-gray-600">{label}</span>
-                      <span className="text-[7px] font-mono text-gray-500">{val.toFixed(3)}</span>
-                    </div>
-                    <div className="h-0.5 bg-white/[0.04] rounded-full mt-0.5">
-                      <div className="h-full rounded-full bg-cyan-600/60" style={{ width: `${Math.min(100,(val/max)*100)}%` }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* ── Right panel ───────────────────────────────────────── */}
-        <aside className="hidden lg:flex w-56 xl:w-64 shrink-0 border-l border-white/[0.03] bg-black/30 flex-col">
+        {/* Left sidebar — frosted glass overlay */}
+        <aside className="absolute left-0 top-0 bottom-0 hidden md:flex w-44 lg:w-52 z-10
+                          bg-black/60 backdrop-blur-md border-r border-white/[0.05]">
+          <EmergenceLadder emergence={emergence} tick={tick} />
+        </aside>
+
+        {/* Right sidebar — frosted glass overlay */}
+        <aside className="absolute right-0 top-0 bottom-0 hidden lg:flex w-56 xl:w-64 flex-col z-10
+                          bg-black/60 backdrop-blur-md border-l border-white/[0.05] overflow-y-auto">
           {/* Chart */}
           <div className="p-3 border-b border-white/[0.04]">
             <h4 className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-2">Population</h4>
@@ -343,14 +305,14 @@ export default function App() {
 
           {/* World Laws */}
           {laws && (
-            <div className="p-3 border-b border-white/[0.04] overflow-y-auto">
+            <div className="p-3 border-b border-white/[0.04]">
               <WorldLawsView laws={laws} title="Evolved Physics" />
             </div>
           )}
 
-          {/* Emergence ladder — visible in right panel on tablet only */}
+          {/* Emergence stage */}
           {emergence.stage >= 0 && (
-            <div className="p-3 border-t border-white/[0.04]">
+            <div className="p-3 mt-auto border-t border-white/[0.04]">
               <h4 className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-1">Current Stage</h4>
               <div className="text-xs font-semibold text-cyan-400">
                 {['Replicators','Communication','External Memory','Tool Use','Abstraction','Civilization','World Engineering','Recursive Threshold'][emergence.stage]}
