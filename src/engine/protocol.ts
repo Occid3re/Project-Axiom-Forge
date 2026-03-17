@@ -15,6 +15,7 @@ export interface DecodedFrame {
   entityEnergy: Uint8Array;
   entityAction: Uint8Array;
   entityAggression: Uint8Array;
+  entitySpeciesHue: Uint8Array;
 }
 
 const MAGIC = 0x41584647;
@@ -40,9 +41,10 @@ export function decodeFrame(buf: ArrayBuffer): DecodedFrame | null {
   const entityY          = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityEnergy     = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityAction     = u8.slice(offset, offset + entityCount); offset += entityCount;
-  const entityAggression = u8.slice(offset, offset + entityCount);
+  const entityAggression = u8.slice(offset, offset + entityCount); offset += entityCount;
+  const entitySpeciesHue = u8.slice(offset, offset + entityCount);
 
-  return { gridW, gridH, entityCount, tick, resources, signals, entityX, entityY, entityEnergy, entityAction, entityAggression };
+  return { gridW, gridH, entityCount, tick, resources, signals, entityX, entityY, entityEnergy, entityAction, entityAggression, entitySpeciesHue };
 }
 
 export interface ServerMeta {
@@ -50,6 +52,8 @@ export interface ServerMeta {
   worldIndex: number;
   totalWorlds: number;
   tick: number;
+  displayTick?: number;
+  bestLaws: import('./world-laws').WorldLaws | null;
   population: number;
   scores: {
     persistence: number; diversity: number; complexityGrowth: number;

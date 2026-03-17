@@ -173,6 +173,34 @@ export function mutateLaws(laws: WorldLaws, rng: PRNG, strength: number = 0.1): 
   return result;
 }
 
+/**
+ * Hand-tuned starter laws — produce interesting visible behaviour from tick 1.
+ * Used as the initial display world before meta-evolution finds anything good.
+ */
+export function starterLaws(): WorldLaws {
+  return {
+    reproductionCost:     0.28,
+    offspringEnergy:      0.20,
+    mutationRate:         0.06,
+    mutationStrength:     0.06,
+    sexualReproduction:   true,
+    resourceRegenRate:    0.028,
+    eatGain:              0.42,
+    moveCost:             0.007,
+    idleCost:             0.004,
+    attackTransfer:       0.50,
+    signalRange:          4,
+    signalChannels:       3,
+    signalDecay:          0.80,
+    memorySize:           4,
+    memoryPersistence:    0.65,
+    resourceDistribution: ResourceDist.CLUSTERED,
+    disasterProbability:  0.003,
+    terrainVariability:   0.65,
+    maxPerceptionRadius:  3,
+  };
+}
+
 export function crossoverLaws(a: WorldLaws, b: WorldLaws, rng: PRNG): WorldLaws {
   const result = {} as any;
   const keys = Object.keys(a) as (keyof WorldLaws)[];

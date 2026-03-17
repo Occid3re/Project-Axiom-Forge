@@ -11,20 +11,84 @@ import { WorldView } from './ui/components/WorldView';
 import { EmergenceLadder, detectEmergence, type EmergenceState } from './ui/components/EmergenceLadder';
 import { TransmissionLog } from './ui/components/TransmissionLog';
 import { PopulationChart } from './ui/components/PopulationChart';
+import { WorldLawsView } from './ui/components/WorldLawsView';
 
 // ---- Types -----------------------------------------------------------------
 
 interface Snapshot { population: number; diversity?: number; signalActivity?: number; }
 
+// ---- Epilepsy Warning ------------------------------------------------------
+
+function EpilepsyGate({ onEnter }: { onEnter: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#03070d]">
+      <div className="w-full max-w-lg mx-4 rounded-2xl border border-amber-500/30 bg-[#0d1117] p-8 shadow-2xl shadow-amber-900/10">
+        {/* Warning icon */}
+        <div className="flex justify-center mb-6">
+          <div className="w-16 h-16 rounded-full border-2 border-amber-400/60 flex items-center justify-center">
+            <svg viewBox="0 0 24 24" className="w-8 h-8 text-amber-400" fill="none" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+          </div>
+        </div>
+
+        <h1 className="text-center text-xl font-bold text-amber-300 tracking-wide mb-2">
+          Photosensitivity Warning
+        </h1>
+        <p className="text-center text-xs text-amber-500/70 uppercase tracking-widest mb-6">
+          Epilepsy / Seizure Risk
+        </p>
+
+        <div className="space-y-3 mb-8">
+          <p className="text-sm text-gray-400 leading-relaxed">
+            <span className="text-gray-200 font-medium">LostUplink: Axiom Forge</span> displays a
+            rapidly evolving simulation with flashing lights, flickering patterns, and high-contrast
+            animated visuals that change continuously.
+          </p>
+          <p className="text-sm text-gray-400 leading-relaxed">
+            A small percentage of people may experience epileptic seizures when exposed to certain
+            light patterns or flashing images. If you or anyone in your household has an epilepsy
+            diagnosis or has ever experienced seizures, please consult a doctor before viewing.
+          </p>
+          <p className="text-sm text-gray-500 leading-relaxed">
+            Stop watching and seek medical attention immediately if you experience dizziness,
+            altered vision, eye or muscle twitching, or loss of awareness.
+          </p>
+        </div>
+
+        <button
+          onClick={onEnter}
+          className="w-full py-3.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 text-sm font-semibold tracking-wider hover:bg-amber-500/20 hover:border-amber-400/60 transition-all duration-200 active:scale-[0.98]"
+        >
+          I understand — Enter the simulation
+        </button>
+        <p className="text-center text-[10px] text-gray-700 mt-4">
+          lostuplink.com &nbsp;·&nbsp;
+          <a href="https://buymeacoffee.com/juliussze" target="_blank" rel="noopener noreferrer" className="hover:text-gray-500 transition-colors">☕ Support</a>
+          &nbsp;·&nbsp;
+          <a href="/impressum.html" className="hover:text-gray-500 transition-colors">Legal</a>
+          &nbsp;·&nbsp;
+          <a href="/datenschutz.html" className="hover:text-gray-500 transition-colors">Privacy</a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ---- App -------------------------------------------------------------------
 
 export default function App() {
-  const [frame, setFrame]         = useState<DecodedFrame | null>(null);
+  const [entered, setEntered] = useState(false);
+
+  // Frame stored in a ref — bypasses React state so the RAF render loop
+  // in WorldView reads it directly without triggering re-renders.
+  const frameRef = useRef<DecodedFrame | null>(null);
   const [meta, setMeta]           = useState<ServerMeta | null>(null);
   const [connected, setConnected] = useState(false);
   const [log, setLog]             = useState<string[]>(['Connecting to Axiom Forge...']);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [emergence, setEmergence] = useState<EmergenceState>({ stage: -1, progress: new Array(8).fill(0) });
+  const [laws, setLaws] = useState<import('./engine/world-laws').WorldLaws | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const addLog = useCallback((msg: string) => setLog(p => [...p.slice(-200), msg]), []);
@@ -42,11 +106,12 @@ export default function App() {
   // Accumulate snapshots for chart
   useEffect(() => {
     if (!meta) return;
-    setSnapshots(p => {
-      const next = [...p, { population: meta.population }].slice(-300);
-      return next;
-    });
-  }, [meta?.tick]);
+    setSnapshots(p => [...p, {
+      population: meta.population,
+      diversity: meta.scores?.diversity ?? 0,
+      signalActivity: meta.scores?.communication ?? 0,
+    }].slice(-300));
+  }, [meta]);
 
   // Socket connection
   useEffect(() => {
@@ -58,11 +123,12 @@ export default function App() {
 
     socket.on('frame', (buf: ArrayBuffer) => {
       const decoded = decodeFrame(buf);
-      if (decoded) setFrame(decoded);
+      if (decoded) frameRef.current = decoded; // goes directly to RAF loop
     });
 
     socket.on('meta', (m: ServerMeta) => {
       setMeta(m);
+      if (m.bestLaws) setLaws(m.bestLaws);
       if (m.logEntry) addLog(m.logEntry);
     });
 
@@ -76,6 +142,8 @@ export default function App() {
   const best  = meta?.bestScore ?? 0;
   const tick  = meta?.tick ?? 0;
   const scores = meta?.scores ?? null;
+
+  if (!entered) return <EpilepsyGate onEnter={() => setEntered(true)} />;
 
   return (
     <div className="h-[100dvh] w-screen bg-[#070809] overflow-hidden flex flex-col select-none">
@@ -128,7 +196,7 @@ export default function App() {
 
           {/* World canvas — fills available space */}
           <div className="flex-1 relative bg-[#070809] min-h-0">
-            <WorldView frame={frame} className="absolute inset-0" />
+            <WorldView frameRef={frameRef} className="absolute inset-0" />
 
             {/* Overlay: population counter */}
             {pop > 0 && (
@@ -142,7 +210,7 @@ export default function App() {
             )}
 
             {/* Extinction banner */}
-            {frame && pop === 0 && (
+            {meta && pop === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="text-center">
                   <div className="text-xl font-mono text-red-900/50 tracking-[0.4em] uppercase">Extinction</div>
@@ -198,6 +266,33 @@ export default function App() {
             {/* Log */}
             <TransmissionLog entries={log} />
           </div>
+
+          {/* Mobile info panel — compact laws + key stats, hidden on desktop */}
+          {laws && (
+            <div className="block lg:hidden shrink-0 border-t border-white/[0.04] bg-black/40 px-3 py-2">
+              <div className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-1.5">Evolved Physics</div>
+              <div className="grid grid-cols-3 gap-x-3 gap-y-1">
+                {([
+                  ['Eat Gain',   laws.eatGain,        1.0],
+                  ['Move Cost',  laws.moveCost,        0.1],
+                  ['Attack',     laws.attackTransfer,  0.8],
+                  ['Regen',      laws.resourceRegenRate, 0.1],
+                  ['Repro Cost', laws.reproductionCost, 1.0],
+                  ['Mutation',   laws.mutationRate,    0.5],
+                ] as [string, number, number][]).map(([label, val, max]) => (
+                  <div key={label} className="flex flex-col">
+                    <div className="flex justify-between">
+                      <span className="text-[7px] text-gray-600">{label}</span>
+                      <span className="text-[7px] font-mono text-gray-500">{val.toFixed(3)}</span>
+                    </div>
+                    <div className="h-0.5 bg-white/[0.04] rounded-full mt-0.5">
+                      <div className="h-full rounded-full bg-cyan-600/60" style={{ width: `${Math.min(100,(val/max)*100)}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Right panel ───────────────────────────────────────── */}
@@ -241,24 +336,10 @@ export default function App() {
             </div>
           )}
 
-          {/* Lineage heatmap */}
-          {meta?.generations && meta.generations.length > 0 && (
-            <div className="p-3 flex-1">
-              <h4 className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-2">Lineage</h4>
-              <div className="flex flex-wrap gap-0.5">
-                {meta.generations.slice(-60).map((g, i) => {
-                  const norm = best > 0 ? g.best / best : 0;
-                  return (
-                    <div key={i} title={`Gen ${g.gen} · ${g.best.toFixed(2)}`}
-                      className="w-2.5 h-2.5 rounded-sm"
-                      style={{ background: `rgba(6,182,212,${0.06 + norm * 0.94})`,
-                        boxShadow: norm > 0.9 ? '0 0 4px rgba(6,182,212,0.5)' : 'none' }} />
-                  );
-                })}
-              </div>
-              <div className="mt-2 text-[8px] text-gray-700 font-mono">
-                {meta.generations.length} generations observed
-              </div>
+          {/* World Laws */}
+          {laws && (
+            <div className="p-3 border-b border-white/[0.04] overflow-y-auto">
+              <WorldLawsView laws={laws} title="Evolved Physics" />
             </div>
           )}
 
@@ -274,6 +355,22 @@ export default function App() {
           )}
         </aside>
       </div>
+
+      {/* Legal footer */}
+      <footer className="shrink-0 flex items-center justify-center gap-4 py-2 border-t border-white/[0.04]">
+        <a href="https://buymeacoffee.com/juliussze" target="_blank" rel="noopener noreferrer"
+           className="text-[9px] text-amber-700 hover:text-amber-500 transition-colors font-medium">
+          ☕ Buy me a coffee
+        </a>
+        <span className="text-gray-800 text-[9px]">·</span>
+        <a href="/impressum.html" className="text-[9px] text-gray-700 hover:text-gray-500 transition-colors">Legal Notice</a>
+        <span className="text-gray-800 text-[9px]">·</span>
+        <a href="/impressum.de.html" className="text-[9px] text-gray-700 hover:text-gray-500 transition-colors">Impressum</a>
+        <span className="text-gray-800 text-[9px]">·</span>
+        <a href="/datenschutz.html" className="text-[9px] text-gray-700 hover:text-gray-500 transition-colors">Privacy</a>
+        <span className="text-gray-800 text-[9px]">·</span>
+        <a href="/datenschutz.de.html" className="text-[9px] text-gray-700 hover:text-gray-500 transition-colors">Datenschutz</a>
+      </footer>
     </div>
   );
 }

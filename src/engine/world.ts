@@ -232,6 +232,26 @@ export class World {
         continue;
       }
 
+      // Overcrowding death — density-dependent mortality caps population
+      // > 4 occupied Moore-neighbours = suffocating; energy drains fast
+      {
+        const cx = entities.x[i], cy = entities.y[i];
+        let nCount = 0;
+        for (let dy0 = -1; dy0 <= 1; dy0++) {
+          for (let dx0 = -1; dx0 <= 1; dx0++) {
+            if (dx0 === 0 && dy0 === 0) continue;
+            const nx0 = ((cx + dx0) % gridW + gridW) % gridW;
+            const ny0 = ((cy + dy0) % gridH + gridH) % gridH;
+            if (this.entityMap[ny0 * gridW + nx0] >= 0) nCount++;
+          }
+        }
+        if (nCount > 2) {
+          // Fixed overcrowding cost — independent of idleCost so it always bites
+          entities.energy[i] -= 0.04 * (nCount - 2);
+          if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
+        }
+      }
+
       // Decide action
       const action = this.decideAction(i);
       entities.action[i] = action;
@@ -322,6 +342,48 @@ export class World {
     // ATTACK
     scores[ActionType.ATTACK] = g[Gene.AGGRESSION] * entityDensity * 2.0;
 
+    // Predator drive (ADAPTATION_RATE gene): specialize in hunting rather than eating plants
+    const predatorDrive = g[Gene.ADAPTATION_RATE];
+    if (predatorDrive > 0.4 && nearbyEntities > 0) {
+      scores[ActionType.ATTACK]    += predatorDrive * entityDensity * 6.0;
+      scores[ActionType.EAT]       *= 1.0 - predatorDrive * 0.7; // predators ignore resources
+      scores[ActionType.REPRODUCE] *= 1.0 - predatorDrive * 0.4; // reproduce less while hunting
+    }
+
+    // Overcrowding suppresses reproduction — no point reproducing into a full grid
+    if (entityDensity > 0.4) {
+      scores[ActionType.REPRODUCE] *= Math.max(0, 1.0 - entityDensity * 1.4);
+    }
+
+    // Cooperation: if nearby entities share similar genome, reduce aggression and boost signaling
+    if (g[Gene.COOPERATION] > 0.3 && nearbyEntities > 0) {
+      // Sample one nearby entity for genome similarity
+      let neighborGenomeMatch = 0;
+      for (let dy2 = -1; dy2 <= 1; dy2++) {
+        for (let dx2 = -1; dx2 <= 1; dx2++) {
+          if (dx2 === 0 && dy2 === 0) continue;
+          const nx2 = ((ex + dx2) % gridW + gridW) % gridW;
+          const ny2 = ((ey + dy2) % gridH + gridH) % gridH;
+          const nb = this.entityMap[ny2 * gridW + nx2];
+          if (nb >= 0 && entities.alive[nb]) {
+            const ng = entities.getGenome(nb);
+            let dist = 0;
+            for (let gi = 0; gi < 4; gi++) { // compare first 4 genes only for speed
+              const d = g[gi] - ng[gi];
+              dist += d * d;
+            }
+            neighborGenomeMatch = Math.max(neighborGenomeMatch, 1 - Math.sqrt(dist) / 2);
+            break;
+          }
+        }
+        if (neighborGenomeMatch > 0) break;
+      }
+      const cooperationBonus = g[Gene.COOPERATION] * neighborGenomeMatch;
+      scores[ActionType.ATTACK]   -= cooperationBonus * 2.0;  // kin selection: don't attack relatives
+      scores[ActionType.SIGNAL]   += cooperationBonus * 1.5;  // kin signaling
+      scores[ActionType.REPRODUCE]+= cooperationBonus * 0.5;  // cooperative reproduction pressure
+    }
+
     // Add memory influence
     for (let a = 0; a < 6; a++) scores[a] += memInfluence * 0.1;
 
@@ -350,6 +412,28 @@ export class World {
     let dx = Math.sign(g[Gene.MOVE_BIAS_X] - 0.5 + rng.normal(0, g[Gene.MOVE_RANDOMNESS] * 0.5));
     let dy = Math.sign(g[Gene.MOVE_BIAS_Y] - 0.5 + rng.normal(0, g[Gene.MOVE_RANDOMNESS] * 0.5));
     if (dx === 0 && dy === 0) dx = rng.int(-1, 1);
+
+    // Predators chase nearest entity within radius 2
+    const predatorDrive = g[Gene.ADAPTATION_RATE];
+    if (predatorDrive > 0.5) {
+      const ox = entities.x[i], oy = entities.y[i];
+      let minDist = 99, preyDx = 0, preyDy = 0;
+      for (let dy2 = -2; dy2 <= 2; dy2++) {
+        for (let dx2 = -2; dx2 <= 2; dx2++) {
+          if (dx2 === 0 && dy2 === 0) continue;
+          const nx2 = ((ox + dx2) % gridW + gridW) % gridW;
+          const ny2 = ((oy + dy2) % gridH + gridH) % gridH;
+          const d = Math.abs(dx2) + Math.abs(dy2);
+          if (entityMap[ny2 * gridW + nx2] >= 0 && d < minDist) {
+            minDist = d; preyDx = dx2; preyDy = dy2;
+          }
+        }
+      }
+      if (minDist < 99 && rng.random() < predatorDrive) {
+        dx = Math.sign(preyDx) || (rng.random() > 0.5 ? 1 : -1);
+        dy = Math.sign(preyDy) || (rng.random() > 0.5 ? 1 : -1);
+      }
+    }
 
     dx = Math.max(-1, Math.min(1, Math.round(dx)));
     dy = Math.max(-1, Math.min(1, Math.round(dy)));
@@ -386,6 +470,8 @@ export class World {
     const { entities, laws, rng, gridW, gridH, entityMap } = this;
 
     if (entities.energy[i] < laws.reproductionCost) return;
+    // Hard population cap — 7% of grid cells prevents exponential explosion
+    if (entities.count >= Math.floor(gridW * gridH * 0.07)) return;
 
     // Find empty adjacent cell
     const ox = entities.x[i];
@@ -402,8 +488,33 @@ export class World {
       const cell = ny * gridW + nx;
 
       if (entityMap[cell] < 0) {
+        // Sexual reproduction: find a nearby mate with different genome
+        let mateGenome: Float32Array | null = null;
+        if (laws.sexualReproduction) {
+          // Scan for nearby entities within radius 2
+          outer: for (let mdy = -2; mdy <= 2; mdy++) {
+            for (let mdx = -2; mdx <= 2; mdx++) {
+              if (mdx === 0 && mdy === 0) continue;
+              const mx = ((ox + mdx) % gridW + gridW) % gridW;
+              const my = ((oy + mdy) % gridH + gridH) % gridH;
+              const mCell = my * gridW + mx;
+              const mate = this.entityMap[mCell];
+              if (mate >= 0 && mate !== i && entities.alive[mate]) {
+                mateGenome = entities.getGenome(mate);
+                break outer;
+              }
+            }
+          }
+        }
+
+        // Build child genome: crossover if mate found, else clone
         const parentGenome = entities.getGenome(i);
-        const childIdx = entities.spawn(nx, ny, laws.offspringEnergy, parentGenome, entities.id[i], rng);
+        const childGenome = new Float32Array(GENOME_LENGTH);
+        for (let g = 0; g < GENOME_LENGTH; g++) {
+          childGenome[g] = (mateGenome && rng.random() > 0.5) ? mateGenome[g] : parentGenome[g];
+        }
+
+        const childIdx = entities.spawn(nx, ny, laws.offspringEnergy, childGenome, entities.id[i], rng);
         if (childIdx >= 0) {
           entities.mutateGenome(childIdx, laws.mutationRate, laws.mutationStrength, rng);
           entityMap[cell] = childIdx;
@@ -440,12 +551,35 @@ export class World {
 
   private executeAttack(i: number): void {
     const { entities, laws, rng, gridW, gridH, entityMap } = this;
-    const dx = rng.int(-1, 1);
-    const dy = rng.int(-1, 1);
-    if (dx === 0 && dy === 0) return;
+    const g = entities.getGenome(i);
+    const predatorDrive = g[Gene.ADAPTATION_RATE];
 
-    const nx = ((entities.x[i] + dx) % gridW + gridW) % gridW;
-    const ny = ((entities.y[i] + dy) % gridH + gridH) % gridH;
+    // Predators attack the nearest entity they see; others attack randomly
+    let tdx: number, tdy: number;
+    if (predatorDrive > 0.5) {
+      const ox = entities.x[i], oy = entities.y[i];
+      let minDist = 99, bestDx = 0, bestDy = 0;
+      for (let dy2 = -1; dy2 <= 1; dy2++) {
+        for (let dx2 = -1; dx2 <= 1; dx2++) {
+          if (dx2 === 0 && dy2 === 0) continue;
+          const nx2 = ((ox + dx2) % gridW + gridW) % gridW;
+          const ny2 = ((oy + dy2) % gridH + gridH) % gridH;
+          const d = Math.abs(dx2) + Math.abs(dy2);
+          if (entityMap[ny2 * gridW + nx2] >= 0 && d < minDist) {
+            minDist = d; bestDx = dx2; bestDy = dy2;
+          }
+        }
+      }
+      tdx = minDist < 99 ? bestDx : rng.int(-1, 1);
+      tdy = minDist < 99 ? bestDy : rng.int(-1, 1);
+    } else {
+      tdx = rng.int(-1, 1);
+      tdy = rng.int(-1, 1);
+    }
+    if (tdx === 0 && tdy === 0) return;
+
+    const nx = ((entities.x[i] + tdx) % gridW + gridW) % gridW;
+    const ny = ((entities.y[i] + tdy) % gridH + gridH) % gridH;
     const cell = ny * gridW + nx;
     const target = entityMap[cell];
 
@@ -453,9 +587,15 @@ export class World {
       const stolen = entities.energy[target] * laws.attackTransfer;
       entities.energy[i] += stolen;
       entities.energy[target] -= stolen;
+
       if (entities.energy[target] <= 0) {
+        // Predators absorb kill bonus — makes hunting a viable energy strategy
+        if (predatorDrive > 0.4) {
+          entities.energy[i] += predatorDrive * 0.45;
+        }
         this.killEntity(target);
       }
+      if (entities.energy[i] > 1.5) entities.energy[i] = 1.5;
       this.tickAttacks++;
     }
   }
