@@ -32,13 +32,11 @@ app.get('*', (_req, res) => res.sendFile(join(__dirname, '../dist/index.html')))
 const sim = new SimulationController();
 let connectedClients = 0;
 
-// Eval loop — 5 ticks every 10ms = 500 ticks/sec
-// Tiny batches keep the event loop free for Socket.IO and the 30fps display timer.
-setInterval(() => {
-  try { sim.evalBatch(5); } catch (e) {
-    console.error('[eval] tick error (recovering):', e);
-  }
-}, 10);
+// Eval loop — async, runs on worker threads in parallel.
+sim.startEvalLoop().catch(e => {
+  console.error('[eval] loop crashed:', e);
+  process.exit(1);
+});
 
 // Display loop — fixed 30fps, never drops frames to the client
 const DISPLAY_MS = Math.round(1000 / 30);
@@ -68,5 +66,5 @@ io.on('connection', (socket) => {
 
 httpServer.listen(PORT, () => {
   console.log(`[server] LostUplink: Axiom Forge on :${PORT}`);
-  console.log(`[server] Eval: 500 t/s  |  Display: 30 fps`);
+  console.log(`[server] Eval: worker threads  |  Display: 30 fps`);
 });

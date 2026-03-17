@@ -1,18 +1,30 @@
 /**
  * Server-side simulation.
  * Two decoupled loops:
- *   - Eval loop:    meta-evolution runs fast (~500 ticks/sec) to find best laws
- *   - Display loop: replays best world in slow-motion (30 ticks/sec) for viewers
+ *   - Eval loop:    meta-evolution runs on N worker threads in parallel to find best laws
+ *   - Display loop: replays best world in slow-motion (30fps) for viewers
+ *
+ * Worker count adapts to available CPUs automatically:
+ *   numWorkers = os.cpus().length  (e.g. 2 CPUs → 2 workers, 4 CPUs → 4 workers)
+ * Each generation dispatches all worldsPerGeneration eval worlds in parallel;
+ * generation time ≈ ceil(worldsPerGeneration / numWorkers) × singleWorldTime.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { Worker } from 'worker_threads';
+import { cpus } from 'os';
+import { fileURLToPath } from 'url';
+import { dirname, resolve } from 'path';
 import { World, type WorldSnapshot } from '../src/engine/world.ts';
 import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws, starterLaws } from '../src/engine/world-laws.ts';
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
+import { GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE } from '../src/engine/constants.ts';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── State persistence ────────────────────────────────────────────────────────
 
-const STATE_PATH = process.env.STATE_PATH ?? './state.json';
+const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
 const STATE_VERSION = 2;
 
 interface SavedState {
@@ -28,12 +40,12 @@ interface SavedState {
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const EVAL_CONFIG = {
-  gridSize: 64,
-  worldSteps: 800,
-  initialEntities: 45,
+  gridSize:            64,
+  worldSteps:         800,
+  initialEntities:     45,
   worldsPerGeneration: 10,
-  topK: 2,                  // stronger selection — only top 2 survive
-  mutationStrength: 0.08,   // tighter mutations — preserve good laws
+  topK:                 2,
+  mutationStrength:  0.08,
   scoreWeights: {
     persistence:      1.0,
     diversity:        1.5,
@@ -42,42 +54,87 @@ const EVAL_CONFIG = {
     envStructure:     1.0,
     adaptability:     1.8,
   },
-  // Stagnation escape: inject random diversity after N generations with <5% improvement
-  stagnationThreshold: 30,
-  stagnationRandomFraction: 0.25, // replace 25% of population with random laws
-  minImprovementRatio: 0.01,      // display world updates if >1% better
-  // CPU efficiency pressure — worlds that slow the server score worse.
-  // avgTickMs = wall-clock ms per world.step() averaged over worldSteps.
-  // penalty kicks in above target; each doubling of cost reduces score by ~(weight/(1+weight)).
-  cpuTargetMs:     0.8,  // ms/step budget — comfortable for ~100 entities on 64×64
-  cpuPenaltyWeight: 0.6, // at 2× target → score × 0.625; at 4× target → score × 0.357
+  stagnationThreshold:      30,
+  stagnationRandomFraction: 0.25,
+  minImprovementRatio:      0.01,
+  cpuTargetMs:              0.8,
+  cpuPenaltyWeight:         0.6,
 };
 
 const DISPLAY_CONFIG = {
-  gridSize: 256,            // larger grid for display
+  gridSize:        256,
   initialEntities: 180,
-  // Minimum display-world lifetime before it can be replaced by a new best.
-  // At 30fps, 240 ticks ≈ 8 seconds — enough to see the world, not so long we're stuck with a bad one.
   minLifetimeTicks: 240,
 };
 
+// ── Worker pool ──────────────────────────────────────────────────────────────
+
+interface WorkerJob {
+  resolve: (result: EvalWorkerResult) => void;
+  reject:  (err: Error) => void;
+}
+
+interface EvalWorkerResult {
+  scores:     WorldScores;
+  avgTickMs:  number;
+  cpuFactor:  number;
+}
+
+class WorkerPool {
+  readonly size: number;
+  private workers: Worker[];
+  private pending = new Map<number, WorkerJob>();
+  private jobId   = 0;
+
+  constructor(numWorkers: number) {
+    this.size    = numWorkers;
+    const script = resolve(__dirname, './eval-worker.ts');
+    this.workers = Array.from({ length: numWorkers }, () => {
+      const w = new Worker(script);
+      w.on('message', ({ jobId, ...result }: { jobId: number } & EvalWorkerResult) => {
+        const job = this.pending.get(jobId);
+        if (job) { this.pending.delete(jobId); job.resolve(result); }
+      });
+      w.on('error', (err) => console.error('[worker] error:', err));
+      return w;
+    });
+  }
+
+  /** Dispatch a job to a specific worker (caller chooses slot for round-robin). */
+  submit(workerIdx: number, data: object): Promise<EvalWorkerResult> {
+    return new Promise((resolve, reject) => {
+      const id = this.jobId++;
+      this.pending.set(id, { resolve, reject });
+      this.workers[workerIdx % this.workers.length].postMessage({ jobId: id, ...data });
+    });
+  }
+
+  terminate() { this.workers.forEach(w => w.terminate()); }
+}
+
 // ── Binary frame packing ────────────────────────────────────────────────────
+//
+// Genome is now 80 MLP weights (real-valued floats).
+// Visualisation bytes are derived from W2 column means (hidden→action weights),
+// sigmoid-mapped to [0, 1]:
+//   aggression255: W2 ATTACK column (a=5)  → how strongly this network attacks
+//   species255:    W2 SIGNAL column (a=4) + W2 EAT column (a=2) → behaviour fingerprint
 
 export function packFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
   const { gridW: W, gridH: H, entityCount, signalChannels } = vs;
-  const channels = Math.min(signalChannels, 3);
+  const channels   = Math.min(signalChannels, 3);
   const totalBytes = 20 + W * H + W * H * channels + entityCount * 6;
 
-  const buf = new ArrayBuffer(totalBytes);
+  const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
-  const u8 = new Uint8Array(buf);
+  const u8   = new Uint8Array(buf);
 
-  view.setUint32(0, 0x41584647, true); // magic "AXFG"
-  view.setUint32(4, W, true);
-  view.setUint32(8, H, true);
+  view.setUint32(0,  0x41584647, true); // magic "AXFG"
+  view.setUint32(4,  W,    true);
+  view.setUint32(8,  H,    true);
   view.setUint32(12, entityCount, true);
-  view.setUint32(16, tick, true);
+  view.setUint32(16, tick,  true);
 
   let offset = 20;
   for (let i = 0; i < W * H; i++) u8[offset++] = (vs.resources[i] * 255) | 0;
@@ -88,67 +145,71 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
         : 0;
     }
   }
-  // Write entity arrays sequentially to match the decoder in protocol.ts:
-  // all X, then all Y, then all Energy, then all Action, then all Aggression.
+  // X, Y, Energy, Action arrays
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityX[e] & 0xff;
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityY[e] & 0xff;
   for (let e = 0; e < entityCount; e++) u8[offset++] = Math.min(255, (vs.entityEnergy[e] * 255) | 0);
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityAction[e];
-  // Pack combined "predator role": predatorDrive (gene 15) + aggression (gene 3)
-  // Gives full color spectrum: teal herbivores → red predators
+
+  // Aggression byte: mean of W2 ATTACK column, sigmoid → how much this network hunts
   for (let e = 0; e < entityCount; e++) {
-    const predatorDrive = vs.entityGenomes[e * 16 + 15];
-    const aggression    = vs.entityGenomes[e * 16 + 3];
-    u8[offset++] = Math.min(255, ((predatorDrive * 0.65 + aggression * 0.35) * 255) | 0);
+    let attackSum = 0;
+    for (let j = 0; j < NN_HIDDEN; j++) {
+      attackSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 5];
+    }
+    u8[offset++] = Math.round(255 / (1 + Math.exp(-attackSum * 0.4)));
   }
-  // Species hue: signal-channel gene + cooperation gene + explore gene
+
+  // Species hue byte: W2 SIGNAL column + W2 EAT column → behaviour fingerprint
   for (let e = 0; e < entityCount; e++) {
-    const sigChan = vs.entityGenomes[e * 16 + 6];
-    const coop    = vs.entityGenomes[e * 16 + 12];
-    const explore = vs.entityGenomes[e * 16 + 13];
-    u8[offset++] = Math.min(255, ((sigChan * 0.5 + coop * 0.3 + explore * 0.2) * 255) | 0);
+    let sigSum = 0, eatSum = 0;
+    for (let j = 0; j < NN_HIDDEN; j++) {
+      sigSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 4]; // SIGNAL=4
+      eatSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 2]; // EAT=2
+    }
+    const sigTend = 1 / (1 + Math.exp(-sigSum * 0.3));
+    const eatTend = 1 / (1 + Math.exp(-eatSum * 0.3));
+    u8[offset++] = Math.round((sigTend * 0.6 + eatTend * 0.4) * 255);
   }
+
   return buf;
 }
 
 // ── Meta broadcast type ─────────────────────────────────────────────────────
 
 export interface MetaBroadcast {
-  generation: number;
-  worldIndex: number;
-  totalWorlds: number;
-  tick: number;
-  bestLaws: import('../src/engine/world-laws.ts').WorldLaws | null;
-  population: number;
-  scores: WorldScores | null;
-  bestScore: number;
-  generations: Array<{ gen: number; best: number; avg: number }>;
-  logEntry: string | null;
-  gridSize: number;
-  evalSpeed: number;      // ticks/sec in eval loop
-  serverMs: number;       // EMA of display world step time (ms) — server load indicator
+  generation:   number;
+  worldIndex:   number;  // completed eval worlds in this generation (0–worldsPerGeneration)
+  totalWorlds:  number;
+  tick:         number;
+  bestLaws:     import('../src/engine/world-laws.ts').WorldLaws | null;
+  population:   number;
+  scores:       WorldScores | null;
+  bestScore:    number;
+  generations:  Array<{ gen: number; best: number; avg: number }>;
+  logEntry:     string | null;
+  gridSize:     number;
+  evalSpeed:    number;  // effective eval ticks/sec (across all workers)
+  serverMs:     number;  // EMA of display world step time (ms)
 }
 
 // ── Main controller ─────────────────────────────────────────────────────────
 
 export class SimulationController {
   // Eval state
-  private evalRng: PRNG;
-  private population: WorldLaws[] = [];
-  private generation = 0;
-  private worldIndex = 0;
-  private evalWorld: World | null = null;
-  private evalTick = 0;
-  private evalSnapshots: WorldSnapshot[] = [];
+  private evalRng:     PRNG;
+  private population:  WorldLaws[] = [];
+  private generation   = 0;
   private evalResults: Array<{ laws: WorldLaws; scores: WorldScores }> = [];
   private generationSummaries: Array<{ gen: number; best: number; avg: number }> = [];
+  private completedWorldsThisGen = 0;
 
   // Display state
-  private displayWorld: World | null = null;
-  private displayTick = 0;
+  private displayWorld:     World | null    = null;
+  private displayTick       = 0;
   private displaySnapshots: WorldSnapshot[] = [];
-  private displayScores: WorldScores | null = null;
-  private displaySeed = 1;
+  private displayScores:    WorldScores | null = null;
+  private displaySeed       = 1;
 
   // Shared
   bestScore = 0;
@@ -158,20 +219,21 @@ export class SimulationController {
   // Stagnation tracking
   private lastImprovementGen = 0;
 
-  // Perf tracking
-  private evalTickCount = 0;
+  // Perf
   private evalSpeedSample = 0;
-  private lastSpeedCheck = Date.now();
+  private displayStepMs   = 0;
 
-  // CPU efficiency tracking
-  private evalWorldStartTime = 0;       // wall-clock start of current eval world
-  private displayStepMs = 0;            // EMA of display world step time (ms)
+  // Worker pool
+  private workerPool: WorkerPool;
 
   constructor() {
     this.evalRng = new PRNG(Date.now());
+
+    const numWorkers = Math.max(1, cpus().length);
+    this.workerPool  = new WorkerPool(numWorkers);
+
     this.loadState();
-    this.initGeneration();
-    this.log('Axiom Forge online — searching for emergent worlds');
+    this.log(`Axiom Forge online — ${numWorkers} eval worker(s), ${EVAL_CONFIG.worldsPerGeneration} worlds/gen`);
   }
 
   // ── State persistence ───────────────────────────────────────────────────
@@ -181,15 +243,15 @@ export class SimulationController {
       if (!existsSync(STATE_PATH)) return;
       const s: SavedState = JSON.parse(readFileSync(STATE_PATH, 'utf8'));
       if (s.version !== STATE_VERSION) {
-        console.log(`[sim] State file version ${s.version} ≠ ${STATE_VERSION} — starting fresh`);
+        console.log(`[sim] State version ${s.version} ≠ ${STATE_VERSION} — starting fresh`);
         return;
       }
-      this.generation        = s.generation;
-      this.bestScore         = s.bestScore;
-      this.bestLaws          = s.bestLaws;
-      this.lastImprovementGen = s.lastImprovementGen;
-      this.generationSummaries = s.generationSummaries ?? [];
-      this.population        = s.population ?? [];
+      this.generation           = s.generation;
+      this.bestScore            = s.bestScore;
+      this.bestLaws             = s.bestLaws;
+      this.lastImprovementGen   = s.lastImprovementGen;
+      this.generationSummaries  = s.generationSummaries ?? [];
+      this.population           = s.population ?? [];
       console.log(`[sim] Restored: gen ${s.generation}, best ${s.bestScore.toFixed(3)}, pop ${this.population.length}`);
     } catch (e) {
       console.error('[sim] Failed to load state (starting fresh):', e);
@@ -199,13 +261,13 @@ export class SimulationController {
   private saveState() {
     try {
       const s: SavedState = {
-        version:              STATE_VERSION,
-        generation:           this.generation,
-        bestScore:            this.bestScore,
-        bestLaws:             this.bestLaws,
-        lastImprovementGen:   this.lastImprovementGen,
-        generationSummaries:  this.generationSummaries,
-        population:           this.population,
+        version:             STATE_VERSION,
+        generation:          this.generation,
+        bestScore:           this.bestScore,
+        bestLaws:            this.bestLaws,
+        lastImprovementGen:  this.lastImprovementGen,
+        generationSummaries: this.generationSummaries,
+        population:          this.population,
       };
       writeFileSync(STATE_PATH, JSON.stringify(s), 'utf8');
     } catch (e) {
@@ -213,142 +275,120 @@ export class SimulationController {
     }
   }
 
-  // ── Eval loop (called rapidly via setInterval) ──────────────────────────
+  // ── Async eval loop ─────────────────────────────────────────────────────
 
-  /** Run N eval ticks. Returns true if a new best world was found. */
-  evalBatch(n: number): boolean {
-    let newBest = false;
-    for (let i = 0; i < n; i++) {
-      if (this.evalStep()) newBest = true;
+  /**
+   * Start the async eval loop — runs forever, dispatching eval worlds to worker threads.
+   * Call once from index.ts; the returned promise never resolves.
+   */
+  async startEvalLoop(): Promise<never> {
+    // Seed initial population if not restored from state
+    if (this.population.length === 0) this.seedPopulation();
+    // Start display with best known laws immediately
+    if (!this.displayWorld) {
+      this.startDisplayWorld(this.bestLaws ?? starterLaws());
     }
-    // Track speed
-    this.evalTickCount += n;
-    const now = Date.now();
-    if (now - this.lastSpeedCheck >= 2000) {
-      this.evalSpeedSample = Math.round(this.evalTickCount / ((now - this.lastSpeedCheck) / 1000));
-      this.evalTickCount = 0;
-      this.lastSpeedCheck = now;
+
+    while (true) {
+      const genStart = Date.now();
+      await this.runGeneration();
+      const genMs = Date.now() - genStart;
+      // Effective ticks/sec across all workers (workers ran in parallel)
+      this.evalSpeedSample = Math.round(
+        (EVAL_CONFIG.worldsPerGeneration * EVAL_CONFIG.worldSteps) / (genMs / 1000),
+      );
     }
-    return newBest;
   }
 
-  private evalStep(): boolean {
-    const world = this.evalWorld!;
-    const snap = world.step();
-    this.evalTick++;
-    this.evalSnapshots.push(snap);
-    if (this.evalSnapshots.length > 300) this.evalSnapshots.shift();
-
-    if (this.evalTick >= EVAL_CONFIG.worldSteps) {
-      return this.finishEvalWorld();
-    }
-    return false;
+  private seedPopulation() {
+    const base = starterLaws();
+    this.population = [
+      base,
+      mutateLaws(base, this.evalRng, 0.10),
+      mutateLaws(base, this.evalRng, 0.15),
+      mutateLaws(base, this.evalRng, 0.20),
+      ...Array.from({ length: EVAL_CONFIG.worldsPerGeneration - 4 }, () =>
+        randomLaws(this.evalRng),
+      ),
+    ];
   }
 
-  private finishEvalWorld(): boolean {
-    const world = this.evalWorld!;
-    const laws = this.population[this.worldIndex];
-    const scores = scoreWorld(
-      {
-        snapshots: this.evalSnapshots,
-        finalPopulation: world.entities.count,
-        peakPopulation: Math.max(...this.evalSnapshots.map(s => s.population), 0),
-        disasterCount: 0,
-        postDisasterRecoveries: 0,
-      },
-      laws,
-      EVAL_CONFIG.scoreWeights,
+  private async runGeneration(): Promise<void> {
+    this.evalResults           = [];
+    this.completedWorldsThisGen = 0;
+
+    // Generate all seeds upfront (synchronous, on main thread)
+    const seeds = this.population.map(() => this.evalRng.int(0, 0x7fffffff));
+
+    // Dispatch all worlds in parallel — each resolves when its worker is done
+    await Promise.all(
+      this.population.map(async (laws, i) => {
+        const result = await this.workerPool.submit(i, { laws, seed: seeds[i] });
+        this.completedWorldsThisGen++;
+
+        if (result.cpuFactor < 0.8) {
+          this.log(`World ${i + 1} CPU heavy: ×${result.cpuFactor.toFixed(2)} penalty`);
+        }
+
+        // Check for new best (JS single-threaded: no race condition)
+        if (result.scores.total > this.bestScore) {
+          const improvement = this.bestScore > 0
+            ? (result.scores.total - this.bestScore) / this.bestScore
+            : 1;
+          this.bestScore         = result.scores.total;
+          this.bestLaws          = laws;
+          this.lastImprovementGen = this.generation;
+          this.log(`New best: ${result.scores.total.toFixed(3)} · Gen ${this.generation} · World ${i + 1}`);
+          this.saveState();
+          if (improvement >= EVAL_CONFIG.minImprovementRatio &&
+              this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) {
+            this.startDisplayWorld(laws);
+          }
+        }
+
+        this.evalResults.push({ laws, scores: result.scores });
+      }),
     );
 
-    // ── CPU efficiency penalty ───────────────────────────────────────────────
-    // Measure wall-clock time for all 800 steps — gives ~0.1% precision even
-    // with 1ms clock resolution. Worlds that slow the server score worse, so
-    // evolution selects for computationally lean physics naturally.
-    const wallMs    = Date.now() - this.evalWorldStartTime;
-    const avgTickMs = wallMs / EVAL_CONFIG.worldSteps;
-    const overload  = Math.max(0, avgTickMs / EVAL_CONFIG.cpuTargetMs - 1);
-    const cpuFactor = 1 / (1 + overload * EVAL_CONFIG.cpuPenaltyWeight);
-    if (cpuFactor < 0.99) {
-      scores.total *= cpuFactor;
-      // Log when a world is notably expensive
-      if (cpuFactor < 0.8) {
-        this.log(`World ${this.worldIndex + 1} CPU heavy: ${avgTickMs.toFixed(2)}ms/step → score ×${cpuFactor.toFixed(2)}`);
-      }
-    }
-
-    this.evalResults.push({ laws, scores });
-
-    let newBest = false;
-    if (scores.total > this.bestScore) {
-      const improvement = this.bestScore > 0
-        ? (scores.total - this.bestScore) / this.bestScore
-        : 1;
-      this.bestScore = scores.total;
-      this.bestLaws = laws;
-      this.lastImprovementGen = this.generation;
-      this.log(`New best: ${scores.total.toFixed(3)} · Gen ${this.generation} · World ${this.worldIndex + 1}`);
-      this.saveState();
-      // Only update display world if improvement is meaningful (>5%) AND current world
-      // has been running long enough — prevents rapid flicker on early fast improvements.
-      if (improvement >= EVAL_CONFIG.minImprovementRatio && this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) {
-        this.startDisplayWorld(laws);
-      }
-      newBest = true;
-    }
-
-    this.worldIndex++;
-    if (this.worldIndex >= EVAL_CONFIG.worldsPerGeneration) {
-      this.finishGeneration();
-    } else {
-      this.startEvalWorld();
-    }
-    return newBest;
+    this.finishGeneration();
   }
 
   private finishGeneration() {
     const sorted = [...this.evalResults].sort((a, b) => b.scores.total - a.scores.total);
-    const best = sorted[0].scores.total;
-    const avg = this.evalResults.reduce((s, r) => s + r.scores.total, 0) / this.evalResults.length;
+    const best   = sorted[0].scores.total;
+    const avg    = this.evalResults.reduce((s, r) => s + r.scores.total, 0) / this.evalResults.length;
 
     this.generationSummaries.push({ gen: this.generation, best, avg });
     if (this.generationSummaries.length > 80) this.generationSummaries.shift();
 
-    this.log(`Gen ${this.generation} · best ${best.toFixed(3)} · avg ${avg.toFixed(3)} · eval ${this.evalSpeedSample} t/s`);
+    this.log(`Gen ${this.generation} · best ${best.toFixed(3)} · avg ${avg.toFixed(3)} · ${this.evalSpeedSample} t/s`);
 
-    // Stagnation detection — inject random diversity if stuck
     const gensSinceImproved = this.generation - this.lastImprovementGen;
-    const stagnating = gensSinceImproved >= EVAL_CONFIG.stagnationThreshold;
-    if (stagnating) {
-      this.log(`Stagnant for ${gensSinceImproved} gen — injecting diversity`);
-    }
+    const stagnating        = gensSinceImproved >= EVAL_CONFIG.stagnationThreshold;
+    if (stagnating) this.log(`Stagnant for ${gensSinceImproved} gen — injecting diversity`);
 
-    // Evolve: top K survive, rest are mutated children
-    const survivors = sorted.slice(0, EVAL_CONFIG.topK);
+    const survivors   = sorted.slice(0, EVAL_CONFIG.topK);
     const randomSlots = stagnating
       ? Math.ceil(EVAL_CONFIG.worldsPerGeneration * EVAL_CONFIG.stagnationRandomFraction)
       : 0;
-    const childSlots = EVAL_CONFIG.worldsPerGeneration - randomSlots;
+    const childSlots  = EVAL_CONFIG.worldsPerGeneration - randomSlots;
     const childrenPer = Math.floor(childSlots / EVAL_CONFIG.topK);
 
     this.population = [];
     for (const s of survivors) {
       this.population.push(s.laws); // elitism
       for (let c = 1; c < childrenPer; c++) {
-        const strength = stagnating
-          ? EVAL_CONFIG.mutationStrength * 2
-          : EVAL_CONFIG.mutationStrength;
+        const strength = stagnating ? EVAL_CONFIG.mutationStrength * 2 : EVAL_CONFIG.mutationStrength;
         this.population.push(mutateLaws(s.laws, this.evalRng, strength));
       }
     }
-    // Crossover between top-2 survivors for added diversity
     if (survivors.length >= 2) {
       this.population.push(crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng));
       this.population.push(mutateLaws(
         crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng),
-        this.evalRng, EVAL_CONFIG.mutationStrength
+        this.evalRng, EVAL_CONFIG.mutationStrength,
       ));
     }
-    // Fill random slots with entirely new random laws
     for (let r = 0; r < randomSlots; r++) {
       this.population.push(randomLaws(this.evalRng));
     }
@@ -358,81 +398,44 @@ export class SimulationController {
 
     this.generation++;
     this.saveState();
-    this.initGeneration();
-  }
-
-  private initGeneration() {
-    this.evalResults = [];
-    this.worldIndex = 0;
-    if (this.population.length === 0) {
-      // Seed gen-0 with starter-law variants + randoms so early display looks good
-      const base = starterLaws();
-      this.population = [
-        base,
-        mutateLaws(base, this.evalRng, 0.10),
-        mutateLaws(base, this.evalRng, 0.15),
-        mutateLaws(base, this.evalRng, 0.20),
-        ...Array.from({ length: EVAL_CONFIG.worldsPerGeneration - 4 }, () =>
-          randomLaws(this.evalRng)
-        ),
-      ];
-    }
-    this.startEvalWorld();
-  }
-
-  private startEvalWorld() {
-    const seed = this.evalRng.int(0, 0x7fffffff);
-    this.evalWorld = new World(
-      this.population[this.worldIndex],
-      { gridSize: EVAL_CONFIG.gridSize, steps: EVAL_CONFIG.worldSteps, initialEntities: EVAL_CONFIG.initialEntities },
-      seed,
-    );
-    this.evalTick = 0;
-    this.evalSnapshots = [];
-    this.evalWorldStartTime = Date.now();
   }
 
   // ── Display loop (called at 30fps) ─────────────────────────────────────
 
   startDisplayWorld(laws: WorldLaws) {
-    this.displaySeed = this.evalRng.int(0, 0x7fffffff);
+    this.displaySeed  = this.evalRng.int(0, 0x7fffffff);
     this.displayWorld = new World(
       laws,
-      { gridSize: DISPLAY_CONFIG.gridSize, steps: DISPLAY_CONFIG.worldSteps, initialEntities: DISPLAY_CONFIG.initialEntities },
+      { gridSize: DISPLAY_CONFIG.gridSize, steps: 999999, initialEntities: DISPLAY_CONFIG.initialEntities },
       this.displaySeed,
     );
-    this.displayTick = 0;
+    this.displayTick      = 0;
     this.displaySnapshots = [];
-    this.displayScores = null;
+    this.displayScores    = null;
   }
 
   /** Step display world once. Call at ~30fps. Returns broadcast data. */
   displayStep(): { frame: ArrayBuffer; meta: MetaBroadcast } | null {
     if (!this.displayWorld) {
-      // Start with hand-tuned starter laws so the display is interesting from tick 1.
-      // Meta-evolution will replace this as soon as it finds something better.
-      if (this.bestLaws) this.startDisplayWorld(this.bestLaws);
-      else this.startDisplayWorld(starterLaws());
+      this.startDisplayWorld(this.bestLaws ?? starterLaws());
     }
 
     const world = this.displayWorld!;
-    const t0 = Date.now();
-    const snap = world.step();
-    const dt = Date.now() - t0;
-    // EMA of display step time — smooth out noise from 1ms clock resolution
+    const t0    = Date.now();
+    const snap  = world.step();
+    const dt    = Date.now() - t0;
     this.displayStepMs = this.displayStepMs * 0.97 + dt * 0.03;
     this.displayTick++;
     this.displaySnapshots.push(snap);
     if (this.displaySnapshots.length > 400) this.displaySnapshots.shift();
 
-    // Score display world periodically
     if (this.displayTick % 60 === 0 && this.displaySnapshots.length > 20 && this.bestLaws) {
       this.displayScores = scoreWorld(
         {
-          snapshots: this.displaySnapshots,
-          finalPopulation: world.entities.count,
-          peakPopulation: Math.max(...this.displaySnapshots.map(s => s.population), 0),
-          disasterCount: 0,
+          snapshots:             this.displaySnapshots,
+          finalPopulation:       world.entities.count,
+          peakPopulation:        Math.max(...this.displaySnapshots.map(s => s.population), 0),
+          disasterCount:         0,
           postDisasterRecoveries: 0,
         },
         this.bestLaws,
@@ -440,34 +443,31 @@ export class SimulationController {
       );
     }
 
-    // Restart display world if extinction — always use latest best laws
     if (this.displayTick > 300 && snap.population === 0) {
       this.log('Display world — extinction. Reseeding with best laws...');
       if (this.bestLaws) this.startDisplayWorld(this.bestLaws);
     }
 
-    // Periodically refresh display world with best laws when it has been
-    // running a long time (keeps improvement visible over hours/days)
     if (this.displayTick > 0 && this.displayTick % 9000 === 0 && this.bestLaws) {
       this.log('Display world — periodic refresh with current best laws');
       this.startDisplayWorld(this.bestLaws);
     }
 
-    const frame = packFrame(world, this.displayTick);
+    const frame: ArrayBuffer = packFrame(world, this.displayTick);
     const meta: MetaBroadcast = {
-      generation: this.generation,
-      worldIndex: this.worldIndex + 1,
+      generation:  this.generation,
+      worldIndex:  this.completedWorldsThisGen,
       totalWorlds: EVAL_CONFIG.worldsPerGeneration,
-      tick: this.displayTick,
-      bestLaws: this.bestLaws,
-      population: snap.population,
-      scores: this.displayScores,
-      bestScore: this.bestScore,
+      tick:        this.displayTick,
+      bestLaws:    this.bestLaws,
+      population:  snap.population,
+      scores:      this.displayScores,
+      bestScore:   this.bestScore,
       generations: this.generationSummaries,
-      logEntry: this.pendingLog,
-      gridSize: DISPLAY_CONFIG.gridSize,
-      evalSpeed: this.evalSpeedSample,
-      serverMs: this.displayStepMs,
+      logEntry:    this.pendingLog,
+      gridSize:    DISPLAY_CONFIG.gridSize,
+      evalSpeed:   this.evalSpeedSample,
+      serverMs:    this.displayStepMs,
     };
     this.pendingLog = null;
     return { frame, meta };

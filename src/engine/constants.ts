@@ -3,47 +3,45 @@
  * All entity data lives in typed arrays — no objects in the hot loop.
  */
 
-// --- Genome layout ---
-// Each gene is a float32 in [0, 1].
-export const GENOME_LENGTH = 16;
+// --- Neural-network genome layout ---
+// Genome = 80 float weights:
+//   W1 [NN_INPUTS × NN_HIDDEN = 32]:  genome[input * NN_HIDDEN + hidden]
+//   W2 [NN_HIDDEN × NN_OUTPUTS = 48]: genome[NN_W1_SIZE + hidden * NN_OUTPUTS + action]
+//
+// Forward pass (per entity, per tick):
+//   inputs = [localResource, energyNorm, entityDensity, signalStrength]  (all 0–1)
+//   hidden = tanh(W1 · inputs)                                            (8 units)
+//   logits = W2 · hidden                                                   (6 values)
+//   action = softmax_sample(logits)
+//
+// Weights are real-valued floats — NOT clamped to [0, 1].
+// Init: W1 ~ N(0, √(2/NN_INPUTS)),  W2 ~ N(0, √(2/NN_HIDDEN))  (Xavier)
+// Mutation: Gaussian noise, soft-clamped at ±6.
 
-export const enum Gene {
-  MOVE_BIAS_X = 0,
-  MOVE_BIAS_Y = 1,
-  MOVE_RANDOMNESS = 2,
-  AGGRESSION = 3,
-  REPRO_THRESHOLD = 4,
-  EAT_PRIORITY = 5,
-  SIGNAL_CHANNEL = 6,
-  SIGNAL_STRENGTH = 7,
-  SIGNAL_RESPONSIVENESS = 8,
-  PERCEPTION_RANGE = 9,
-  MEMORY_WRITE_RATE = 10,
-  MEMORY_READ_WEIGHT = 11,
-  COOPERATION = 12,
-  EXPLORE_EXPLOIT = 13,
-  ENERGY_CONSERVATISM = 14,
-  ADAPTATION_RATE = 15,
-}
+export const NN_INPUTS   = 4;
+export const NN_HIDDEN   = 8;
+export const NN_OUTPUTS  = 6;
+export const NN_W1_SIZE  = NN_INPUTS  * NN_HIDDEN;   // 32
+export const NN_W2_SIZE  = NN_HIDDEN  * NN_OUTPUTS;  // 48
+export const GENOME_LENGTH = NN_W1_SIZE + NN_W2_SIZE; // 80
 
 // --- Entity data layout (Struct of Arrays) ---
-// Each entity's data is at index [i] across these parallel arrays.
-export const MAX_ENTITIES = 4096;
+export const MAX_ENTITIES    = 4096;
 export const MAX_MEMORY_SIZE = 16;
 
 // --- Action types ---
 export const enum ActionType {
-  IDLE = 0,
-  MOVE = 1,
-  EAT = 2,
+  IDLE      = 0,
+  MOVE      = 1,
+  EAT       = 2,
   REPRODUCE = 3,
-  SIGNAL = 4,
-  ATTACK = 5,
+  SIGNAL    = 4,
+  ATTACK    = 5,
 }
 
 // --- Resource distribution types ---
 export const enum ResourceDist {
-  UNIFORM = 0,
+  UNIFORM   = 0,
   CLUSTERED = 1,
-  GRADIENT = 2,
+  GRADIENT  = 2,
 }

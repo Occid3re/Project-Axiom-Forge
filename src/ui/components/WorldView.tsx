@@ -127,14 +127,14 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
         const dy = (cur.y - prev.y) / rect.height;
         const v = viewRef.current;
         v.panX -= dx * v.zoom;
-        v.panY -= dy * v.zoom;
+        v.panY += dy * v.zoom;
         rendererRef.current?.setView(v.panX, v.panY, v.zoom);
       } else if (pointersRef.current.size >= 2) {
         // Two pointers — pinch zoom toward midpoint
         const pts = Array.from(pointersRef.current.values());
         const newDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
         if (pinchDistRef.current !== null && pinchDistRef.current > 1) {
-          const factor = newDist / pinchDistRef.current;
+          const factor = pinchDistRef.current / newDist;
           const rect = canvas.getBoundingClientRect();
           const midX = ((pts[0].x + pts[1].x) / 2 - rect.left) / rect.width;
           const midY = ((pts[0].y + pts[1].y) / 2 - rect.top) / rect.height;
