@@ -17,8 +17,8 @@ interface WorldViewProps {
   className?: string;
 }
 
-const ZOOM_MIN = 0.25;  // 4× zoom in
-const ZOOM_MAX = 4.0;   // 4× zoom out (shows world tiled 4×4)
+const ZOOM_MIN = 0.1;   // 10× zoom in
+const ZOOM_MAX = 1.0;   // 1:1 full world view — can't zoom out past this
 
 export function WorldView({ frameRef, className = '' }: WorldViewProps) {
   const wrapRef     = useRef<HTMLDivElement>(null);
@@ -104,8 +104,8 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
       const rect = canvas.getBoundingClientRect();
       const nx = (e.clientX - rect.left) / rect.width;
       const ny = (e.clientY - rect.top)  / rect.height;
-      // deltaY > 0 → scroll down → zoom out (factor > 1)
-      const factor = 1 + e.deltaY * 0.0012;
+      // deltaY > 0 → scroll down → zoom in (factor < 1); up → zoom out
+      const factor = 1 - e.deltaY * 0.0012;
       applyZoom(factor, nx, ny);
     };
 
@@ -153,7 +153,7 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
         const rect = canvas.getBoundingClientRect();
         const midX = (t0.clientX + t1.clientX) / 2;
         const midY = (t0.clientY + t1.clientY) / 2;
-        const factor = pinchRef.current.dist / dist; // shrink fingers → zoom out
+        const factor = dist / pinchRef.current.dist; // spread fingers → zoom in
         applyZoom(factor, (midX - rect.left) / rect.width, (midY - rect.top) / rect.height);
         pinchRef.current = { dist, midX, midY };
       }

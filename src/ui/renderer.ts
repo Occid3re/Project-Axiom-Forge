@@ -84,11 +84,6 @@ const SCENE_FRAG = `
     // Trail — faint green cytoplasm residue
     color += vec3(0.01, 0.22, 0.09) * trail.r * 0.38;
 
-    // World boundary — black void outside the simulation when zoomed out
-    float inWorld = step(0.0, wuv.x) * (1.0 - step(1.0, wuv.x))
-                  * step(0.0, wuv.y) * (1.0 - step(1.0, wuv.y));
-    color *= inWorld;
-
     // Vignette — always canvas-relative, independent of zoom/pan
     vec2 uvc = v_uv - 0.5;
     float vig = clamp(1.0 - dot(uvc, uvc) * 1.8, 0.0, 1.0);
@@ -522,8 +517,9 @@ export class WorldRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // REPEAT — world is toroidal, seamless wrap when panning past edges
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
     const fbo = gl.createFramebuffer()!;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
@@ -535,8 +531,9 @@ export class WorldRenderer {
     const { gl } = this;
     const tex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // REPEAT — world is toroidal, seamless wrap when panning past edges
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     return tex;
