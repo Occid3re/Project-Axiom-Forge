@@ -3,10 +3,11 @@
  * Accepts a frameRef so socket frames skip React state entirely.
  * Renders at 60fps using whatever data was last received from the server.
  *
- * Interaction:
- *   - Scroll wheel / pinch  → zoom (tiled REPEAT world when zoomed out)
- *   - Click + drag          → pan
- *   - Double-click          → reset to 1:1
+ * Interaction (unified Pointer Events — works for mouse and touch):
+ *   - 1 finger / mouse drag  → pan (toroidal wrap)
+ *   - 2 fingers pinch/spread → zoom in/out
+ *   - Scroll wheel           → zoom in/out
+ *   - Double-click/tap       → reset to 1:1
  */
 import { useEffect, useRef } from 'react';
 import { WorldRenderer } from '../renderer';
@@ -17,19 +18,20 @@ interface WorldViewProps {
   className?: string;
 }
 
-const ZOOM_MIN = 0.1;   // 10× zoom in
-const ZOOM_MAX = 1.0;   // 1:1 full world view — can't zoom out past this
+const ZOOM_MIN = 0.1;  // 10× zoom in
+const ZOOM_MAX = 1.0;  // full world view — can't zoom out past this
 
 export function WorldView({ frameRef, className = '' }: WorldViewProps) {
   const wrapRef     = useRef<HTMLDivElement>(null);
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<WorldRenderer | null>(null);
 
-  // View state in a ref — no re-renders needed
-  const viewRef  = useRef({ panX: 0.5, panY: 0.5, zoom: 1.0 });
-  const dragRef  = useRef<{ x: number; y: number } | null>(null);
-  // Pinch-to-zoom state
-  const pinchRef = useRef<{ dist: number; midX: number; midY: number } | null>(null);
+  // View state — no re-renders needed
+  const viewRef      = useRef({ panX: 0.5, panY: 0.5, zoom: 1.0 });
+  // Unified pointer tracking: pointerId → current {x,y}
+  const pointersRef  = useRef(new Map<number, { x: number; y: number }>());
+  // Previous pinch distance — null when not pinching
+  const pinchDistRef = useRef<number | null>(null);
 
   // Init renderer
   useEffect(() => {
@@ -61,7 +63,7 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
     return () => ro.disconnect();
   }, []);
 
-  // RAF render loop — 60 fps, fully decoupled from React state updates
+  // RAF render loop
   useEffect(() => {
     let rafId: number;
     const loop = (ms: number) => {
@@ -80,7 +82,7 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
     return () => cancelAnimationFrame(rafId);
   }, [frameRef]);
 
-  // Zoom/pan interaction
+  // Zoom / pan via unified Pointer Events + wheel
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -88,7 +90,7 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
     const applyZoom = (factor: number, canvasNX: number, canvasNY: number) => {
       const v = viewRef.current;
       const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, v.zoom * factor));
-      // Keep the world point under the cursor fixed
+      // Keep the world point under the focal position fixed
       const cx = canvasNX - 0.5;
       const cy = canvasNY - 0.5;
       const worldX = v.panX + cx * v.zoom;
@@ -99,87 +101,86 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
       rendererRef.current?.setView(v.panX, v.panY, v.zoom);
     };
 
+    // ── Pointer events (mouse + touch unified) ──────────────────────────────
+
+    const onPointerDown = (e: PointerEvent) => {
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId); // keep getting events if finger slides off
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      // Reset pinch distance when a new finger lands
+      if (pointersRef.current.size === 2) {
+        const pts = Array.from(pointersRef.current.values());
+        pinchDistRef.current = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      }
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      const prev = pointersRef.current.get(e.pointerId);
+      if (!prev) return;
+      const cur = { x: e.clientX, y: e.clientY };
+      pointersRef.current.set(e.pointerId, cur);
+
+      if (pointersRef.current.size === 1) {
+        // Single pointer — pan
+        const rect = canvas.getBoundingClientRect();
+        const dx = (cur.x - prev.x) / rect.width;
+        const dy = (cur.y - prev.y) / rect.height;
+        const v = viewRef.current;
+        v.panX -= dx * v.zoom;
+        v.panY -= dy * v.zoom;
+        rendererRef.current?.setView(v.panX, v.panY, v.zoom);
+      } else if (pointersRef.current.size >= 2) {
+        // Two pointers — pinch zoom toward midpoint
+        const pts = Array.from(pointersRef.current.values());
+        const newDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        if (pinchDistRef.current !== null && pinchDistRef.current > 1) {
+          const factor = newDist / pinchDistRef.current;
+          const rect = canvas.getBoundingClientRect();
+          const midX = ((pts[0].x + pts[1].x) / 2 - rect.left) / rect.width;
+          const midY = ((pts[0].y + pts[1].y) / 2 - rect.top) / rect.height;
+          applyZoom(factor, midX, midY);
+        }
+        pinchDistRef.current = newDist;
+      }
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      pointersRef.current.delete(e.pointerId);
+      if (pointersRef.current.size < 2) pinchDistRef.current = null;
+    };
+
+    // ── Scroll wheel ────────────────────────────────────────────────────────
+
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const nx = (e.clientX - rect.left) / rect.width;
       const ny = (e.clientY - rect.top)  / rect.height;
-      // deltaY > 0 → scroll down → zoom in (factor < 1); up → zoom out
-      const factor = 1 - e.deltaY * 0.0012;
+      const factor = 1 - e.deltaY * 0.0012; // scroll down = zoom in
       applyZoom(factor, nx, ny);
     };
 
-    const onPointerDown = (e: PointerEvent) => {
-      dragRef.current = { x: e.clientX, y: e.clientY };
-      canvas.setPointerCapture(e.pointerId);
-    };
-
-    const onPointerMove = (e: PointerEvent) => {
-      if (!dragRef.current) return;
-      const rect = canvas.getBoundingClientRect();
-      const dx = (e.clientX - dragRef.current.x) / rect.width;
-      const dy = (e.clientY - dragRef.current.y) / rect.height;
-      dragRef.current = { x: e.clientX, y: e.clientY };
-      const v = viewRef.current;
-      v.panX -= dx * v.zoom;
-      v.panY -= dy * v.zoom;
-      rendererRef.current?.setView(v.panX, v.panY, v.zoom);
-    };
-
-    const onPointerUp = () => { dragRef.current = null; };
+    // ── Double-click / double-tap reset ─────────────────────────────────────
 
     const onDblClick = () => {
       viewRef.current = { panX: 0.5, panY: 0.5, zoom: 1.0 };
       rendererRef.current?.setView(0.5, 0.5, 1.0);
     };
 
-    const onTouchStart = (e: TouchEvent) => {
-      e.preventDefault(); // block browser pinch-zoom fighting our handler
-      if (e.touches.length === 2) {
-        const t0 = e.touches[0], t1 = e.touches[1];
-        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
-        pinchRef.current = {
-          dist,
-          midX: (t0.clientX + t1.clientX) / 2,
-          midY: (t0.clientY + t1.clientY) / 2,
-        };
-      }
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && pinchRef.current) {
-        e.preventDefault();
-        const t0 = e.touches[0], t1 = e.touches[1];
-        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
-        const rect = canvas.getBoundingClientRect();
-        const midX = (t0.clientX + t1.clientX) / 2;
-        const midY = (t0.clientY + t1.clientY) / 2;
-        const factor = dist / pinchRef.current.dist; // spread fingers → zoom in
-        applyZoom(factor, (midX - rect.left) / rect.width, (midY - rect.top) / rect.height);
-        pinchRef.current = { dist, midX, midY };
-      }
-    };
-
-    const onTouchEnd = () => { pinchRef.current = null; };
-
-    canvas.addEventListener('wheel',       onWheel,       { passive: false });
-    canvas.addEventListener('pointerdown', onPointerDown);
-    canvas.addEventListener('pointermove', onPointerMove);
-    canvas.addEventListener('pointerup',   onPointerUp);
-    canvas.addEventListener('dblclick',    onDblClick);
-    canvas.addEventListener('touchstart',  onTouchStart,  { passive: false });
-    canvas.addEventListener('touchmove',   onTouchMove,   { passive: false });
-    canvas.addEventListener('touchend',    onTouchEnd);
+    canvas.addEventListener('pointerdown',  onPointerDown, { passive: false });
+    canvas.addEventListener('pointermove',  onPointerMove, { passive: true });
+    canvas.addEventListener('pointerup',    onPointerUp);
+    canvas.addEventListener('pointercancel',onPointerUp);
+    canvas.addEventListener('wheel',        onWheel,       { passive: false });
+    canvas.addEventListener('dblclick',     onDblClick);
 
     return () => {
-      canvas.removeEventListener('wheel',       onWheel);
-      canvas.removeEventListener('pointerdown', onPointerDown);
-      canvas.removeEventListener('pointermove', onPointerMove);
-      canvas.removeEventListener('pointerup',   onPointerUp);
-      canvas.removeEventListener('dblclick',    onDblClick);
-      canvas.removeEventListener('touchstart',  onTouchStart);
-      canvas.removeEventListener('touchmove',   onTouchMove);
-      canvas.removeEventListener('touchend',    onTouchEnd);
+      canvas.removeEventListener('pointerdown',  onPointerDown);
+      canvas.removeEventListener('pointermove',  onPointerMove);
+      canvas.removeEventListener('pointerup',    onPointerUp);
+      canvas.removeEventListener('pointercancel',onPointerUp);
+      canvas.removeEventListener('wheel',        onWheel);
+      canvas.removeEventListener('dblclick',     onDblClick);
     };
   }, []);
 
@@ -195,7 +196,7 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
           maxWidth: '100%',
           maxHeight: '100%',
           cursor: 'crosshair',
-          touchAction: 'none',   // hand all touch events to our handlers
+          touchAction: 'none',  // hand ALL touch to pointer events, no browser zoom/scroll
         }}
         title="Scroll to zoom · Drag to pan · Double-click to reset"
       />
