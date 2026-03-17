@@ -93,8 +93,9 @@ function render(
 
   // Node layout
   const R      = Math.max(7, Math.min(W, H) * 0.022); // node radius
-  const padX   = W  * 0.02 + R * 4;                   // horizontal padding for labels
-  const LX     = [padX, W / 2, W - padX];
+  const padL   = W  * 0.02 + R * 4;                   // left padding  — room for input labels
+  const padR   = R  * 11;                              // right padding — room for output labels + prob bars + %
+  const LX     = [padL, (padL + W - padR) / 2, W - padR]; // hidden centred in available span
   const margY  = H  * 0.13;
   const usable = H  - margY * 2;
 
