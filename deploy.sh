@@ -22,7 +22,7 @@ echo "==> Uploading client dist..."
 tar -czf - -C dist . | ssh "${DEPLOY_HOST}" "rm -rf ${DEPLOY_DIR}/dist/* && tar -xzf - -C ${DEPLOY_DIR}/dist/"
 
 echo "==> Uploading server bundle..."
-tar -czf - -C server dist/server.mjs ecosystem.config.cjs package.json \
+tar -czf - -C server dist/server.mjs dist/eval-worker.mjs ecosystem.config.cjs package.json \
   | ssh "${DEPLOY_HOST}" "tar -xzf - -C ${DEPLOY_DIR}/server/"
 
 echo "==> Installing server runtime dependencies (express, socket.io)..."
