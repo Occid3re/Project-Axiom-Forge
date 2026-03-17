@@ -63,4 +63,6 @@ export interface ServerMeta {
   generations: Array<{ gen: number; best: number; avg: number }>;
   logEntry: string | null;
   gridSize: number;
+  evalSpeed?: number;
+  serverMs?: number;       // EMA ms per display step — server load indicator
 }

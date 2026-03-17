@@ -135,13 +135,16 @@ export default function App() {
     return () => { socket.disconnect(); };
   }, [addLog]);
 
-  const pop   = meta?.population ?? 0;
-  const gen   = meta?.generation ?? 0;
-  const wIdx  = meta?.worldIndex ?? 0;
-  const wTot  = meta?.totalWorlds ?? 0;
-  const best  = meta?.bestScore ?? 0;
-  const tick  = meta?.tick ?? 0;
-  const scores = meta?.scores ?? null;
+  const pop      = meta?.population ?? 0;
+  const gen      = meta?.generation ?? 0;
+  const wIdx     = meta?.worldIndex ?? 0;
+  const wTot     = meta?.totalWorlds ?? 0;
+  const best     = meta?.bestScore ?? 0;
+  const tick     = meta?.tick ?? 0;
+  const scores   = meta?.scores ?? null;
+  const serverMs = meta?.serverMs ?? 0;
+  // Server load color: green < 5ms, yellow 5–15ms, red > 15ms
+  const serverColor = serverMs < 5 ? '#10b981' : serverMs < 15 ? '#f59e0b' : '#ef4444';
 
   if (!entered) return <EpilepsyGate onEnter={() => setEntered(true)} />;
 
@@ -250,6 +253,8 @@ export default function App() {
                 <div className="w-px h-6 bg-white/[0.05] shrink-0" />
               </>}
               <Stat label="Best Ever"  value={best.toFixed(2)}    color="#8b5cf6" />
+              <div className="w-px h-6 bg-white/[0.05] shrink-0" />
+              <Stat label="Server"     value={`${serverMs.toFixed(1)}ms`} color={serverColor} />
 
               {/* Sparkline */}
               {meta?.generations && meta.generations.length > 1 && (

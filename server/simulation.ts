@@ -30,6 +30,11 @@ const EVAL_CONFIG = {
   stagnationThreshold: 30,
   stagnationRandomFraction: 0.25, // replace 25% of population with random laws
   minImprovementRatio: 0.01,      // display world updates if >1% better
+  // CPU efficiency pressure — worlds that slow the server score worse.
+  // avgTickMs = wall-clock ms per world.step() averaged over worldSteps.
+  // penalty kicks in above target; each doubling of cost reduces score by ~(weight/(1+weight)).
+  cpuTargetMs:     0.8,  // ms/step budget — comfortable for ~100 entities on 64×64
+  cpuPenaltyWeight: 0.6, // at 2× target → score × 0.625; at 4× target → score × 0.357
 };
 
 const DISPLAY_CONFIG = {
@@ -105,6 +110,7 @@ export interface MetaBroadcast {
   logEntry: string | null;
   gridSize: number;
   evalSpeed: number;      // ticks/sec in eval loop
+  serverMs: number;       // EMA of display world step time (ms) — server load indicator
 }
 
 // ── Main controller ─────────────────────────────────────────────────────────
@@ -140,6 +146,10 @@ export class SimulationController {
   private evalTickCount = 0;
   private evalSpeedSample = 0;
   private lastSpeedCheck = Date.now();
+
+  // CPU efficiency tracking
+  private evalWorldStartTime = 0;       // wall-clock start of current eval world
+  private displayStepMs = 0;            // EMA of display world step time (ms)
 
   constructor() {
     this.evalRng = new PRNG(Date.now());
@@ -193,6 +203,22 @@ export class SimulationController {
       laws,
       EVAL_CONFIG.scoreWeights,
     );
+
+    // ── CPU efficiency penalty ───────────────────────────────────────────────
+    // Measure wall-clock time for all 800 steps — gives ~0.1% precision even
+    // with 1ms clock resolution. Worlds that slow the server score worse, so
+    // evolution selects for computationally lean physics naturally.
+    const wallMs    = Date.now() - this.evalWorldStartTime;
+    const avgTickMs = wallMs / EVAL_CONFIG.worldSteps;
+    const overload  = Math.max(0, avgTickMs / EVAL_CONFIG.cpuTargetMs - 1);
+    const cpuFactor = 1 / (1 + overload * EVAL_CONFIG.cpuPenaltyWeight);
+    if (cpuFactor < 0.99) {
+      scores.total *= cpuFactor;
+      // Log when a world is notably expensive
+      if (cpuFactor < 0.8) {
+        this.log(`World ${this.worldIndex + 1} CPU heavy: ${avgTickMs.toFixed(2)}ms/step → score ×${cpuFactor.toFixed(2)}`);
+      }
+    }
 
     this.evalResults.push({ laws, scores });
 
@@ -305,6 +331,7 @@ export class SimulationController {
     );
     this.evalTick = 0;
     this.evalSnapshots = [];
+    this.evalWorldStartTime = Date.now();
   }
 
   // ── Display loop (called at 30fps) ─────────────────────────────────────
@@ -331,7 +358,11 @@ export class SimulationController {
     }
 
     const world = this.displayWorld!;
+    const t0 = Date.now();
     const snap = world.step();
+    const dt = Date.now() - t0;
+    // EMA of display step time — smooth out noise from 1ms clock resolution
+    this.displayStepMs = this.displayStepMs * 0.97 + dt * 0.03;
     this.displayTick++;
     this.displaySnapshots.push(snap);
     if (this.displaySnapshots.length > 400) this.displaySnapshots.shift();
@@ -378,6 +409,7 @@ export class SimulationController {
       logEntry: this.pendingLog,
       gridSize: DISPLAY_CONFIG.gridSize,
       evalSpeed: this.evalSpeedSample,
+      serverMs: this.displayStepMs,
     };
     this.pendingLog = null;
     return { frame, meta };
