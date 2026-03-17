@@ -9,22 +9,26 @@ import { mkdir } from 'fs/promises';
 
 await mkdir('server/dist', { recursive: true });
 
-const result = await esbuild.build({
-  entryPoints: ['server/index.ts'],
+const shared = {
   bundle: true,
   platform: 'node',
   target: 'node18',
   format: 'esm',
-  outfile: 'server/dist/server.mjs',
-  external: ['express', 'socket.io'], // keep npm deps external
+  external: ['express', 'socket.io'],
   sourcemap: false,
   minify: false,
   logLevel: 'info',
-});
+};
 
-if (result.errors.length > 0) {
-  console.error('Server build failed:', result.errors);
+const [r1, r2] = await Promise.all([
+  esbuild.build({ ...shared, entryPoints: ['server/index.ts'],      outfile: 'server/dist/server.mjs' }),
+  esbuild.build({ ...shared, entryPoints: ['server/eval-worker.ts'], outfile: 'server/dist/eval-worker.mjs' }),
+]);
+
+const errors = [...r1.errors, ...r2.errors];
+if (errors.length > 0) {
+  console.error('Server build failed:', errors);
   process.exit(1);
 }
 
-console.log('Server bundled → server/dist/server.mjs');
+console.log('Server bundled → server/dist/server.mjs + eval-worker.mjs');

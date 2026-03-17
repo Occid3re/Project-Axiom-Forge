@@ -20,7 +20,8 @@ import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws, starterLaw
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
 import { GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE } from '../src/engine/constants.ts';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
 
 // ── State persistence ────────────────────────────────────────────────────────
 
@@ -88,7 +89,8 @@ class WorkerPool {
 
   constructor(numWorkers: number) {
     this.size    = numWorkers;
-    const script = resolve(__dirname, './eval-worker.ts');
+    const ext    = __filename.endsWith('.mjs') ? '.mjs' : '.ts';
+    const script = resolve(__dirname, `./eval-worker${ext}`);
     this.workers = Array.from({ length: numWorkers }, () => {
       const w = new Worker(script);
       w.on('message', ({ jobId, ...result }: { jobId: number } & EvalWorkerResult) => {
