@@ -53,13 +53,14 @@ interface DirectorState {
   wideShot: boolean;
 }
 
-const ZOOM_MIN = 0.1;
+const ZOOM_MIN = 0.05;
 const ZOOM_MAX = 1.0;
 const DIRECTOR_SPECIES_BUCKETS = 24;
 const DIRECTOR_MANUAL_HOLD_MS = 18_000;
 const DIRECTOR_WIDE_SHOT_MS = 5_000;
 const DIRECTOR_SPOTLIGHT_MS = 12_000;
 const DIRECTOR_IDLE_SWITCH_MS = 4_500;
+const SPECIMEN_LIMIT = 28;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -75,6 +76,11 @@ function lerpWrapped(from: number, to: number, alpha: number) {
   if (delta > 0.5) delta -= 1;
   if (delta < -0.5) delta += 1;
   return wrap01(from + delta * alpha);
+}
+
+function wrapDistance01(from: number, to: number) {
+  const direct = Math.abs(to - from);
+  return Math.min(direct, 1 - direct);
 }
 
 export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: WorldViewProps) {
@@ -96,8 +102,8 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
     wideShot: false,
   });
   const [directorHud, setDirectorHud] = useState<DirectorHud>({
-    title: 'Director warming up',
-    subtitle: 'Scanning for emergent species',
+    title: 'Specimen camera warming up',
+    subtitle: 'Scanning for a lineage worth isolating',
   });
 
   useEffect(() => {
@@ -222,13 +228,13 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
 
         const centerX = wrap01(Math.atan2(aggregate.sumSinX, aggregate.sumCosX) / tau);
         const centerY = wrap01(Math.atan2(aggregate.sumSinY, aggregate.sumCosY) / tau);
-        let title = 'Rare species close-up';
+        let title = 'Prepared specimen slide';
         if (ageMs < 20_000) {
-          title = 'New lineage spotted';
+          title = 'New lineage on slide';
         } else if (avgAggression > 0.62) {
-          title = 'Hunter bloom in focus';
+          title = 'Predator specimen isolate';
         } else if (avgComplexity > 0.62) {
-          title = 'Complex cluster in focus';
+          title = 'Complex lineage isolate';
         }
 
         bestScore = score;
@@ -236,18 +242,93 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
           bucket: aggregate.bucket,
           panX: centerX,
           panY: centerY,
-          zoom: clamp(0.12 + aggregate.count / 420, 0.14, 0.32),
+          zoom: clamp(0.07 + aggregate.count / 1500, 0.07, 0.16),
           title,
-          subtitle: `${aggregate.count} bodies · complexity ${Math.round(avgComplexity * 100)}%`,
+          subtitle: `${Math.min(SPECIMEN_LIMIT, aggregate.count)} specimens from a ${aggregate.count}-body colony`,
         };
       }
 
       return bestShot;
     };
 
+    const buildSpecimenFrame = (
+      frame: DecodedEntityFrame,
+      shot: DirectorShot | null,
+    ): DecodedEntityFrame => {
+      if (!shot || shot.bucket < 0 || frame.entityCount <= SPECIMEN_LIMIT) return frame;
+
+      const selected: Array<{ index: number; score: number }> = [];
+
+      for (let i = 0; i < frame.entityCount; i++) {
+        const hue = frame.entitySpeciesHue[i] / 255;
+        const bucket = Math.min(
+          DIRECTOR_SPECIES_BUCKETS - 1,
+          Math.floor(hue * DIRECTOR_SPECIES_BUCKETS),
+        );
+        if (bucket !== shot.bucket) continue;
+
+        const x = frame.entityX[i] / Math.max(1, frame.gridW);
+        const y = frame.entityY[i] / Math.max(1, frame.gridH);
+        const dx = wrapDistance01(x, shot.panX);
+        const dy = wrapDistance01(y, shot.panY);
+        const distSq = dx * dx + dy * dy;
+        const energy = frame.entityEnergy[i] / 255;
+        const complexity = frame.entityComplexity[i] / 255;
+        const score = distSq - energy * 0.03 - complexity * 0.02;
+
+        if (selected.length < SPECIMEN_LIMIT) {
+          selected.push({ index: i, score });
+          selected.sort((a, b) => a.score - b.score);
+        } else if (score < selected[selected.length - 1].score) {
+          selected[selected.length - 1] = { index: i, score };
+          selected.sort((a, b) => a.score - b.score);
+        }
+      }
+
+      if (selected.length < 4) return frame;
+
+      const entityCount = selected.length;
+      const entityX = new Uint8Array(entityCount);
+      const entityY = new Uint8Array(entityCount);
+      const entityEnergy = new Uint8Array(entityCount);
+      const entityAction = new Uint8Array(entityCount);
+      const entityAggression = new Uint8Array(entityCount);
+      const entitySpeciesHue = new Uint8Array(entityCount);
+      const entityComplexity = new Uint8Array(entityCount);
+      const entityMotility = new Uint8Array(entityCount);
+
+      for (let i = 0; i < entityCount; i++) {
+        const source = selected[i].index;
+        entityX[i] = frame.entityX[source];
+        entityY[i] = frame.entityY[source];
+        entityEnergy[i] = frame.entityEnergy[source];
+        entityAction[i] = frame.entityAction[source];
+        entityAggression[i] = frame.entityAggression[source];
+        entitySpeciesHue[i] = frame.entitySpeciesHue[source];
+        entityComplexity[i] = frame.entityComplexity[source];
+        entityMotility[i] = frame.entityMotility[source];
+      }
+
+      return {
+        gridW: frame.gridW,
+        gridH: frame.gridH,
+        entityCount,
+        tick: frame.tick,
+        entityX,
+        entityY,
+        entityEnergy,
+        entityAction,
+        entityAggression,
+        entitySpeciesHue,
+        entityComplexity,
+        entityMotility,
+      };
+    };
+
     const loop = (ms: number) => {
       const renderer = rendererRef.current;
       if (renderer) {
+        const director = directorRef.current;
         const fieldFrame = fieldFrameRef.current;
         if (fieldFrame) {
           renderer.updateFieldFrame(fieldFrame);
@@ -257,16 +338,18 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
         const entityFrame = entityFrameRef.current;
         if (entityFrame) {
           latestEntityFrameRef.current = entityFrame;
-          renderer.updateEntityFrame(entityFrame);
+          const displayFrame = ms < director.manualUntil
+            ? entityFrame
+            : buildSpecimenFrame(entityFrame, director.shot);
+          renderer.updateEntityFrame(displayFrame);
           (entityFrameRef as React.MutableRefObject<DecodedEntityFrame | null>).current = null;
         }
 
-        const director = directorRef.current;
         const shot = director.shot;
 
         if (ms < director.manualUntil) {
           const seconds = Math.max(1, Math.ceil((director.manualUntil - ms) / 1000));
-          setHud('Manual control', `Auto director returns in ${seconds}s`);
+          setHud('Manual control', `Auto specimen camera returns in ${seconds}s`);
         } else {
           if (shot && ms >= director.shotEndsAt) {
             director.shot = null;
@@ -278,9 +361,9 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
                 bucket: -1,
                 panX: 0.5,
                 panY: 0.5,
-                zoom: 0.78,
-                title: 'Wide ecosystem view',
-                subtitle: 'Breeding continues in the background',
+                zoom: 0.82,
+                title: 'Dish overview',
+                subtitle: 'Background breeding stays live while the camera searches',
               };
               director.shotEndsAt = ms + DIRECTOR_WIDE_SHOT_MS;
               director.nextCutAt = director.shotEndsAt;
@@ -295,9 +378,12 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
                 director.wideShot = false;
                 const memory = director.speciesMemory.get(spotlight.bucket);
                 if (memory) memory.lastSpotlightMs = ms;
+                if (frame) {
+                  renderer.updateEntityFrame(buildSpecimenFrame(frame, spotlight));
+                }
               } else {
                 director.nextCutAt = ms + DIRECTOR_IDLE_SWITCH_MS;
-                setHud('Director scanning', 'Waiting for a distinct species cluster');
+                setHud('Specimen camera scanning', 'Waiting for a distinct colony worth isolating');
               }
             }
           }
@@ -333,7 +419,7 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
       hudKeyRef.current = '';
       setDirectorHud({
         title,
-        subtitle: 'Auto director returns in 18s',
+        subtitle: 'Auto specimen camera returns in 18s',
       });
     };
 
@@ -446,7 +532,7 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
       />
       <div className="pointer-events-none absolute left-3 top-3 max-w-[240px] rounded-xl border border-white/10 bg-black/45 px-3 py-2 text-white backdrop-blur-md">
         <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-300/80">
-          Cinematic Director
+          Specimen Camera
         </div>
         <div className="mt-1 text-sm font-medium leading-tight">
           {directorHud.title}
