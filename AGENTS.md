@@ -286,11 +286,12 @@ Canvas 2D component showing the MLP of the most-energetic display entity:
   - Alpha proportional to `|weight| / maxWeight`
   - 2 animated particles per connection, speed ∝ |weight|
 - **Nodes**: glowing circles with radial gradient; brightness = actual activation for canonical inputs
-  - Inputs: Input layer colored by type (green/amber/purple/cyan)
-  - Hidden: hue cycles blue→purple across the 8 units
-  - Outputs: each action has its color; winner gets extra glow
-- **Probability bars**: horizontal bars next to output nodes showing softmax probs
-- Toggle button in header switches between simulation and network view
+  - Inputs: colored by type (green/amber/purple/cyan)
+  - Hidden: hue cycles blue→purple across the 8 units (`hsl()` colors — use `withAlpha()` helper, NOT `color+'hex'` concatenation which only works for `#rrggbb`)
+  - Outputs: each action has its color; winner gets extra glow + probability bar
+- **Layout**: asymmetric padding — `padL = W*0.02+R*4` (room for input labels), `padR = R*11` (room for output labels + bars + %)
+- **Canvas sizing**: wrapper div uses `position:absolute;inset:0`; canvas has explicit `width:100%;height:100%` CSS — critical to prevent the canvas attribute width from leaking into CSS display size (which would cause DPR×overflow and clip the right half on retina screens)
+- Toggle button in header switches between simulation and network view; sidebars hide when network mode is active
 
 ### Frame → Render path (zero React state)
 ```
@@ -328,7 +329,7 @@ Socket.IO 'meta' event   → setMeta(m) → sampleGenome → NeuralNetView (when
 ```
 
 Sidebars are `absolute inset-y-0` overlays on the canvas div only.
-NeuralNetView fills the same canvas area as WorldView — sidebars overlay it too.
+NeuralNetView fills the same canvas area as WorldView; **sidebars are hidden** when network mode is active (so the visualizer gets full width).
 
 ---
 
