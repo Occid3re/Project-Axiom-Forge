@@ -218,13 +218,12 @@ export class World {
     }
 
     // Carrying-capacity "air" pressure — O(1), applied inline below.
-    // Continuous quadratic curve: pressure ∝ (n / maxPop)².
-    // Doubling population quadruples the drain → strong self-regulating feedback.
-    // At 1× capacity pressure is tiny; at 4× it dominates metabolism.
-    // Capped at 0.2/tick so entities always have a few ticks to act.
-    const maxPop      = Math.max(5, Math.round(gridW * gridH * laws.carryingCapacity));
-    const ratio       = n / maxPop;
-    const airPressure = Math.min(0.2, 0.001 * ratio * ratio);
+    // Exponential curve keyed to hard cap of 4096.
+    // Below 1024: negligible.  At 2048: ~½ idleCost.  Above 3500: fatal within seconds.
+    // pressure = min(0.3, 2e-5 × e^(9 × n/4096))
+    const MAX_POP     = 4096;
+    const ratio       = n / MAX_POP;
+    const airPressure = Math.min(0.3, 0.00002 * Math.exp(ratio * 9));
 
     for (let oi = 0; oi < n; oi++) {
       const i = order[oi];
@@ -388,7 +387,7 @@ export class World {
     const { entities, laws, rng, gridW, gridH, entityMap } = this;
 
     if (entities.energy[i] < laws.reproductionCost) return;
-    if (entities.count >= Math.floor(gridW * gridH * 0.07)) return;
+    if (entities.count >= Math.min(4096, Math.floor(gridW * gridH * 0.07))) return;
 
     const ox = entities.x[i];
     const oy = entities.y[i];
