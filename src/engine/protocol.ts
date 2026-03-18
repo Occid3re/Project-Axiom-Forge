@@ -79,4 +79,5 @@ export interface ServerMeta {
   serverMs?: number;       // EMA ms per display step — server load indicator
   serverPressure?: number; // 0-2: environmental harshness from server load
   sampleGenome?: number[]; // 180 MLP weights of the most-energetic display entity
+  displaySeed?: number;    // changes every time the display world is restarted
 }

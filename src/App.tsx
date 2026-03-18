@@ -92,21 +92,22 @@ export default function App() {
   const [emergence, setEmergence] = useState<EmergenceState>({ stage: -1, progress: new Array(10).fill(0) });
   const [laws, setLaws] = useState<import('./engine/world-laws').WorldLaws | null>(null);
   const [bestWorldPulse, setBestWorldPulse] = useState(false);
-  const prevBestScoreRef = useRef<number>(-1);
+  const prevDisplaySeedRef = useRef<number>(-1);
 
   const socketRef = useRef<Socket | null>(null);
   const addLog = useCallback((msg: string) => setLog(p => [...p.slice(-200), msg]), []);
 
-  // Pulse best-world indicator when a new best is found (display world refreshes)
+  // Pulse best-world indicator whenever the display world restarts
+  // (new best found, extinction reseed, or periodic 9000-tick refresh)
   useEffect(() => {
-    const currentBest = meta?.bestScore ?? 0;
-    if (currentBest > prevBestScoreRef.current && prevBestScoreRef.current >= 0) {
+    const seed = meta?.displaySeed ?? -1;
+    if (seed !== -1 && seed !== prevDisplaySeedRef.current && prevDisplaySeedRef.current !== -1) {
       setBestWorldPulse(true);
       const t = setTimeout(() => setBestWorldPulse(false), 2000);
       return () => clearTimeout(t);
     }
-    prevBestScoreRef.current = currentBest;
-  }, [meta?.bestScore]);
+    prevDisplaySeedRef.current = seed;
+  }, [meta?.displaySeed]);
 
   // Detect emergence from latest scores
   useEffect(() => {

@@ -239,6 +239,7 @@ export interface MetaBroadcast {
   serverMs:     number;       // EMA of display world step time (ms)
   serverPressure: number;     // 0-2: how much the world is punishing creatures for server load
   sampleGenome?: number[];    // 180 MLP weights of the most-energetic display entity
+  displaySeed:  number;       // changes every time startDisplayWorld() is called
 }
 
 // ── Main controller ─────────────────────────────────────────────────────────
@@ -601,6 +602,7 @@ export class SimulationController {
       serverMs:     this.displayStepMs,
       serverPressure: pressure,
       sampleGenome,
+      displaySeed:  this.displaySeed,
     };
     this.pendingLog = null;
     return { frame, meta };
