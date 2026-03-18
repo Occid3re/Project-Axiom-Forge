@@ -39,6 +39,7 @@ const SCENE_FRAG = `
   uniform float u_time;
   uniform vec2 u_pan;
   uniform float u_zoom;
+  uniform float u_specimen;
 
   // Fast hash for film grain
   float hash(vec2 p) {
@@ -58,36 +59,45 @@ const SCENE_FRAG = `
     float poison = res.g;  // toxin concentration
     float glyph = res.b;   // stigmergic memory magnitude
 
-    // Dark microscope field
-    vec3 color = vec3(0.004, 0.006, 0.010);
-
-    // Agar substrate — faint warm noise
+    vec3 darkBg = vec3(0.004, 0.006, 0.010);
     float substrate = hash(wuv * 180.0) * 0.006;
-    color += vec3(substrate * 0.6, substrate * 0.8, substrate * 0.2);
+    darkBg += vec3(substrate * 0.6, substrate * 0.8, substrate * 0.2);
 
-    // Nutrient medium — warm amber-green, slow gentle pulse
     float pulse = 0.92 + 0.08 * sin(u_time * 0.4 + wuv.x * 9.0 + wuv.y * 7.0);
-    color += vec3(0.06, 0.13, 0.02) * r * pulse;
-    color += vec3(0.10, 0.20, 0.03) * r * r * 1.4 * pulse;
+    darkBg += vec3(0.06, 0.13, 0.02) * r * pulse;
+    darkBg += vec3(0.10, 0.20, 0.03) * r * r * 1.4 * pulse;
 
-    // Poison — toxic magenta-red glow, pulsing faintly
-    // poison is already 0-1 (GPU normalizes the uint8 texture)
     float poisonPulse = 0.85 + 0.15 * sin(u_time * 1.2 + wuv.x * 13.0 + wuv.y * 11.0);
-    color += vec3(0.45, 0.02, 0.18) * poison * poison * poisonPulse * 0.7;
-    color += vec3(0.20, 0.0, 0.08) * poison * 0.3;
+    darkBg += vec3(0.45, 0.02, 0.18) * poison * poison * poisonPulse * 0.7;
+    darkBg += vec3(0.20, 0.0, 0.08) * poison * 0.3;
 
-    // Stigmergic memory — warm gold/amber glow, subtle shimmer
     float glyphPulse = 0.90 + 0.10 * sin(u_time * 0.8 + wuv.x * 7.0 + wuv.y * 5.0);
-    color += vec3(0.55, 0.35, 0.05) * glyph * glyph * glyphPulse * 0.6;
-    color += vec3(0.25, 0.15, 0.02) * glyph * 0.3;
+    darkBg += vec3(0.55, 0.35, 0.05) * glyph * glyph * glyphPulse * 0.6;
+    darkBg += vec3(0.25, 0.15, 0.02) * glyph * 0.3;
 
-    // Chemical signal fluorescence — three dye channels (subtle, not lightning)
-    float sigR = sig.r * sig.r;  // square for softer falloff — only bright when strong
+    float sigR = sig.r * sig.r;
     float sigG = sig.g * sig.g;
     float sigB = sig.b * sig.b;
-    color += vec3(0.85, 0.08, 0.10) * sigR * 0.5;
-    color += vec3(0.02, 0.65, 0.50) * sigG * 0.45;
-    color += vec3(0.60, 0.06, 0.80) * sigB * 0.40;
+    darkBg += vec3(0.85, 0.08, 0.10) * sigR * 0.5;
+    darkBg += vec3(0.02, 0.65, 0.50) * sigG * 0.45;
+    darkBg += vec3(0.60, 0.06, 0.80) * sigB * 0.40;
+
+    float slideMask = smoothstep(0.02, 0.12, v_uv.x) * smoothstep(0.02, 0.12, v_uv.y)
+      * smoothstep(0.02, 0.12, 1.0 - v_uv.x) * smoothstep(0.02, 0.12, 1.0 - v_uv.y);
+    float glassNoise = hash(v_uv * 900.0 + vec2(7.0, 13.0)) * 0.012;
+    vec3 brightBg = vec3(0.94, 0.92, 0.88);
+    brightBg += vec3(0.02, 0.015, 0.01) * sin(u_time * 0.15 + wuv.y * 12.0);
+    brightBg += vec3(glassNoise);
+    brightBg += vec3(0.03, 0.025, 0.015) * r;
+    brightBg -= vec3(0.10, 0.03, 0.05) * poison * 0.4;
+    brightBg += vec3(0.08, 0.06, 0.02) * glyph * 0.18;
+    brightBg += vec3(0.02, 0.04, 0.03) * (sigR + sigG + sigB) * 0.18;
+    float slideShadow = (1.0 - slideMask) * 0.22;
+    brightBg -= vec3(slideShadow);
+    float glassEdge = (1.0 - slideMask) * 0.45;
+    brightBg += vec3(glassEdge * 0.04, glassEdge * 0.05, glassEdge * 0.06);
+
+    vec3 color = mix(darkBg, brightBg, u_specimen);
 
     // Phase-contrast cell rendering
     // ent.r = membrane ring brightness, ent.g = species hue, ent.b = role, ent.a = presence
@@ -104,27 +114,32 @@ const SCENE_FRAG = `
       vec3 c11 = vec3(0.72, 0.06, 0.84);  // violet       (predator B)
       vec3 cellCol = mix(mix(c00, c01, speciesH), mix(c10, c11, speciesH), role);
 
-      // Phase contrast: translucent body + bright membrane
-      float body     = presence * (1.0 - ringInt) * 0.10;
-      float membrane = ringInt * 1.4;
-      color += cellCol * (body + membrane);
+      vec3 brightCell = mix(vec3(0.28, 0.34, 0.40), cellCol * 0.75 + vec3(0.05), 0.55);
+      float body = presence * (1.0 - ringInt) * mix(0.10, 0.20, u_specimen);
+      float membrane = ringInt * mix(1.4, 0.75, u_specimen);
+      color += mix(cellCol, brightCell, u_specimen) * (body + membrane);
 
-      // Phase-contrast halo — bright edge glow at presence boundary
-      // presence*(1-presence) peaks at 0.5 = cell edge transition
+      float specimenShadow = presence * (0.12 + ringInt * 0.08);
+      color -= vec3(specimenShadow * 0.18 * u_specimen);
+
       float halo = presence * (1.0 - presence) * 4.0;
-      color += cellCol * halo * 0.35;
+      color += mix(cellCol * halo * 0.35, brightCell * halo * 0.10, u_specimen);
     }
 
-    // Trail — faint slime residue
-    color += vec3(0.01, 0.16, 0.05) * trail.r * 0.30;
+    color += vec3(0.01, 0.16, 0.05) * trail.r * 0.30 * (1.0 - u_specimen);
 
-    // Film grain — microscope camera sensor noise
     float grain = (hash(v_uv * 900.0 + u_time * 4.7) - 0.5) * 0.022;
-    color += grain;
+    color += grain * mix(1.0, 0.35, u_specimen);
 
-    // Circular vignette — microscope eyepiece
+    float scaleBarMask =
+      step(0.12, v_uv.x) * step(v_uv.x, 0.34) *
+      step(0.90, v_uv.y) * step(v_uv.y, 0.92);
+    color = mix(color, vec3(0.20, 0.22, 0.24), scaleBarMask * u_specimen);
+
     float vigR = length(v_uv - 0.5) * 2.0;
-    float vig = smoothstep(1.05, 0.60, vigR);
+    float dishVig = smoothstep(1.05, 0.60, vigR);
+    float specimenVig = 0.96 + slideMask * 0.04;
+    float vig = mix(dishVig, specimenVig, u_specimen);
     gl_FragColor = vec4(max(color, vec3(0.0)) * vig, 1.0);
   }
 `;
@@ -158,16 +173,14 @@ const COMP_FRAG = `
   uniform sampler2D u_scene;
   uniform sampler2D u_bloom;
   uniform float u_fade;
+  uniform float u_specimen;
 
   void main() {
     vec2 uvc = v_uv - 0.5;
     float r2 = dot(uvc, uvc);
 
-    // Barrel distortion — microscope optics
-    vec2 d_uv = v_uv + uvc * r2 * 0.035;
-
-    // Chromatic aberration — colour fringing from lens
-    vec2 caOff = uvc * length(uvc) * 0.006;
+    vec2 d_uv = v_uv + uvc * r2 * mix(0.035, 0.006, u_specimen);
+    vec2 caOff = uvc * length(uvc) * mix(0.006, 0.001, u_specimen);
 
     vec3 scene;
     scene.r = texture2D(u_scene, d_uv + caOff).r;
@@ -179,11 +192,10 @@ const COMP_FRAG = `
     bloom.g = texture2D(u_bloom, d_uv).g;
     bloom.b = texture2D(u_bloom, d_uv - caOff * 0.4).b;
 
-    // Screen blend
-    vec3 color = 1.0 - (1.0 - scene) * (1.0 - bloom * 0.65);
-
-    // Gamma
-    color = pow(max(color, vec3(0.0)), vec3(0.90));
+    vec3 screenColor = 1.0 - (1.0 - scene) * (1.0 - bloom * 0.65);
+    vec3 specimenColor = scene + bloom * 0.18;
+    vec3 color = mix(screenColor, specimenColor, u_specimen);
+    color = pow(max(color, vec3(0.0)), mix(vec3(0.90), vec3(1.02), u_specimen));
 
     gl_FragColor = vec4(color * u_fade, 1.0);
   }
@@ -195,9 +207,10 @@ const BLIT_FRAG = `
   varying vec2 v_uv;
   uniform sampler2D u_src;
   uniform float u_fade;
+  uniform float u_specimen;
   void main() {
     vec3 c = texture2D(u_src, v_uv).rgb;
-    c = pow(max(c, vec3(0.0)), vec3(0.90));
+    c = pow(max(c, vec3(0.0)), mix(vec3(0.90), vec3(1.02), u_specimen));
     gl_FragColor = vec4(c * u_fade, 1.0);
   }
 `;
@@ -225,6 +238,9 @@ export class WorldRenderer {
   private uFadeBlit:   WebGLUniformLocation | null = null;
   private uPan:        WebGLUniformLocation | null = null;
   private uZoom:       WebGLUniformLocation | null = null;
+  private uSpecimenScene: WebGLUniformLocation | null = null;
+  private uSpecimenComp:  WebGLUniformLocation | null = null;
+  private uSpecimenBlit:  WebGLUniformLocation | null = null;
 
   // View state — pan is world UV centre (0.5, 0.5 = centred), zoom >1 = zoomed out
   private viewPanX = 0.5;
@@ -247,7 +263,8 @@ export class WorldRenderer {
   private _entBuf:   Uint8Array | null = null;
   private _sigBuf:   Uint8Array | null = null;
   private _trailBuf: Uint8Array | null = null;
-  private _texBufN = 0;
+  private _fieldBufN = 0;
+  private _entBufN = 0;
 
   // Render targets
   private fboScene: FBO | null = null;
@@ -260,6 +277,7 @@ export class WorldRenderer {
   private lastRenderMs = 0;
   private smoothDelta = 16; // exponential moving average of frame delta ms
   private skipBloom = false;
+  private specimenBlend = 0;
 
   // Fade state — smooth transition when display world resets
   private fadeValue = 0.0; // start invisible, fade in on first frame
@@ -292,9 +310,11 @@ export class WorldRenderer {
     this.uTime = gl.getUniformLocation(this.sceneP, 'u_time');
     this.uPan  = gl.getUniformLocation(this.sceneP, 'u_pan');
     this.uZoom = gl.getUniformLocation(this.sceneP, 'u_zoom');
+    this.uSpecimenScene = gl.getUniformLocation(this.sceneP, 'u_specimen');
     // Set defaults
     gl.uniform2f(this.uPan, 0.5, 0.5);
     gl.uniform1f(this.uZoom, 1.0);
+    gl.uniform1f(this.uSpecimenScene, 0.0);
 
     gl.useProgram(this.blurP);
     gl.uniform1i(gl.getUniformLocation(this.blurP, 'u_src'), 0);
@@ -304,7 +324,12 @@ export class WorldRenderer {
     gl.uniform1i(gl.getUniformLocation(this.compP, 'u_scene'), 0);
     gl.uniform1i(gl.getUniformLocation(this.compP, 'u_bloom'), 1);
     this.uFadeComp = gl.getUniformLocation(this.compP, 'u_fade');
+    this.uSpecimenComp = gl.getUniformLocation(this.compP, 'u_specimen');
     this.uFadeBlit = gl.getUniformLocation(this.blitP,  'u_fade');
+    this.uSpecimenBlit = gl.getUniformLocation(this.blitP, 'u_specimen');
+    gl.uniform1f(this.uSpecimenComp, 0.0);
+    gl.useProgram(this.blitP);
+    gl.uniform1f(this.uSpecimenBlit, 0.0);
 
     // Create data textures (empty until first updateFrame)
     this.resTex   = this.makeLinearTex();
@@ -328,14 +353,18 @@ export class WorldRenderer {
     this.rebuildFBOs();
   }
 
-  /** Ensure CPU texture buffers exist for current grid size. */
-  private ensureTexBufs(n: number) {
-    if (this._texBufN === n) return;
-    this._resBuf   = new Uint8Array(n);
-    this._entBuf   = new Uint8Array(n);
-    this._sigBuf   = new Uint8Array(n);
-    this._trailBuf = new Uint8Array(n);
-    this._texBufN  = n;
+  /** Ensure CPU texture buffers exist for current field/entity sizes. */
+  private ensureTexBufs(fieldBytes: number, entityBytes: number) {
+    if (this._fieldBufN !== fieldBytes) {
+      this._resBuf   = new Uint8Array(fieldBytes);
+      this._sigBuf   = new Uint8Array(fieldBytes);
+      this._trailBuf = new Uint8Array(fieldBytes);
+      this._fieldBufN = fieldBytes;
+    }
+    if (this._entBufN !== entityBytes) {
+      this._entBuf = new Uint8Array(entityBytes);
+      this._entBufN = entityBytes;
+    }
   }
 
   updateFieldFrame(f: DecodedFieldFrame) {
@@ -362,6 +391,10 @@ export class WorldRenderer {
     const cells = W * H;
     const specimenMode = Boolean((f as CombinedFrame & { specimenMode?: boolean }).specimenMode);
     const renderScale = (f as CombinedFrame & { renderScale?: number }).renderScale ?? 1;
+    this.specimenBlend = specimenMode ? 1 : 0;
+    const entW = specimenMode ? W * 2 : W;
+    const entH = specimenMode ? H * 2 : H;
+    const entCells = entW * entH;
 
     // Allocate trail if grid changed; clear it on world reset (tick goes back to 0)
     if (W !== this.lastGridW || H !== this.lastGridH) {
@@ -377,7 +410,7 @@ export class WorldRenderer {
     const trail = this.trailData!;
 
     // Reuse CPU buffers — eliminates ~1MB/frame GC pressure
-    this.ensureTexBufs(cells * 4);
+    this.ensureTexBufs(cells * 4, entCells * 4);
     const resData    = this._resBuf!;
     const entData    = this._entBuf!;
     const sigData    = this._sigBuf!;
@@ -408,8 +441,12 @@ export class WorldRenderer {
     entData.fill(0); // clear — entities are max-blended onto clean slate
 
     for (let e = 0; e < entityCount; e++) {
-      const cx = f.entityX[e];
-      const cy = f.entityY[e];
+      const cx = specimenMode
+        ? Math.round((f.entityX[e] / Math.max(1, W - 1)) * Math.max(1, entW - 1))
+        : f.entityX[e];
+      const cy = specimenMode
+        ? Math.round((f.entityY[e] / Math.max(1, H - 1)) * Math.max(1, entH - 1))
+        : f.entityY[e];
       const energy = f.entityEnergy[e] / 255;
       const baseRole = f.entityAggression[e] / 255;
       const act = f.entityAction[e];
@@ -514,8 +551,8 @@ export class WorldRenderer {
 
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
-          const nx = ((cx + dx) % W + W) % W;
-          const ny = ((cy + dy) % H + H) % H;
+          const nx = ((cx + dx) % entW + entW) % entW;
+          const ny = ((cy + dy) % entH + entH) % entH;
 
           // Rotated + elongated local coordinates
           let ldx = dx * cosA + dy * sinA;
@@ -609,7 +646,7 @@ export class WorldRenderer {
           // Energy dims outer glow only
           if (presenceVal < 1.0) ringVal *= 0.35 + energy * 0.65;
 
-          const ci = (ny * W + nx) * 4;
+          const ci = (ny * entW + nx) * 4;
           entData[ci]   = Math.max(entData[ci],   Math.min(255, (ringVal * 255) | 0));
           entData[ci+1] = Math.max(entData[ci+1], speciesHue);
           entData[ci+2] = Math.max(entData[ci+2], roleU8);
@@ -637,7 +674,7 @@ export class WorldRenderer {
 
     // Upload all four textures
     this.uploadTex(this.resTex,   W, H, resData);
-    this.uploadTex(this.entTex,   W, H, entData);
+    this.uploadTex(this.entTex,   entW, entH, entData);
     this.uploadTex(this.sigTex,   W, H, sigData);
     this.uploadTex(this.trailTex, W, H, trailData8);
 
@@ -678,6 +715,7 @@ export class WorldRenderer {
     gl.uniform1f(this.uTime, t);
     gl.uniform2f(this.uPan, this.viewPanX, this.viewPanY);
     gl.uniform1f(this.uZoom, this.viewZoom);
+    gl.uniform1f(this.uSpecimenScene, this.specimenBlend);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     if (this.skipBloom) {
@@ -687,6 +725,7 @@ export class WorldRenderer {
       gl.viewport(0, 0, cw, ch);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.fboScene.tex);
       gl.uniform1f(this.uFadeBlit, this.fadeValue);
+      gl.uniform1f(this.uSpecimenBlit, this.specimenBlend);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       return;
     }
@@ -715,6 +754,7 @@ export class WorldRenderer {
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.fboScene.tex);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.fboBlurB.tex);
     gl.uniform1f(this.uFadeComp, this.fadeValue);
+    gl.uniform1f(this.uSpecimenComp, this.specimenBlend);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
