@@ -310,7 +310,32 @@ On every new best score and every generation end, saves to `STATE_PATH`:
   "lastImprovementGen": N, "generationSummaries": [...], "population": [...] }
 ```
 Loaded on startup (version check). Survives redeploys because the file is outside `server/`.
-**STATE_VERSION=4** — incremented when scoring semantics change (old scores are incomparable).
+**STATE_VERSION=5** — incremented when scoring semantics or WorldLaws shape change.
+
+### Poison & Server Pressure
+
+**Poison grid** (`Float32Array[gridSize²]`):
+- Dying entities deposit `deathToxin` (0–0.8) poison at their cell
+- Poison damages living entities: `energy -= poison × poisonStrength` per tick
+- Poison suppresses local resource regen: effective capacity × `(1 - poison×0.5)`
+- Decays at ~0.5%/tick (base), slower under server pressure
+- Rendered as pulsing magenta-red glow in the microscopy shader
+
+**Server pressure** (display world only):
+- `pressure = clamp((displayStepMs - 33) / 33, 0, 2)`
+- At 33ms target (30fps), a 60ms tick → pressure ≈ 0.82
+- Effects at pressure > 0:
+  - Resource regen ×`1/(1 + pressure×0.5)` — up to 50% slower
+  - Poison decay slower: `0.995 - pressure×0.01` (more persistent dead zones)
+  - Disaster probability ×`(1 + pressure×3)` — up to 7× more disasters
+  - Energy costs +`pressure×0.003` per tick per entity
+- Self-regulating: heavy populations → slow ticks → harsh world → population drops → server recovers
+- Pressure indicator shown in bottom status bar when active (>5%)
+
+**WorldLaws** (evolvable):
+- `poisonStrength`: 0.0–0.3 (damage per tick at full concentration)
+- `deathToxin`: 0.0–0.8 (poison deposited per death)
+- Starter: poisonStrength=0.05, deathToxin=0.25
 
 ---
 
