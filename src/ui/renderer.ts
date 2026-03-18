@@ -24,27 +24,27 @@ function clamp01(v: number) {
 }
 
 const COLOR_GRADING = {
-  hueVariation: 0.22,
-  saturationAmount: 1.02,
-  brightnessAmount: 1.03,
-  paletteStrength: 0.68,
-  glowStrength: 0.42,
-  maxSaturation: 0.34,
-  maxBrightness: 0.88,
+  hueVariation: 0.24,
+  saturationAmount: 1.04,
+  brightnessAmount: 1.02,
+  paletteStrength: 0.72,
+  glowStrength: 0.40,
+  maxSaturation: 0.36,
+  maxBrightness: 0.87,
   backgroundBrightness: 0.96,
   contrast: 1.04,
 } as const;
 
 const SCENE_TUNING = {
-  sceneSaturation: 0.92,
-  bloomStrength: 0.36,
+  sceneSaturation: 0.95,
+  bloomStrength: 0.34,
 } as const;
 
 const ORGANISM_COLOR_TUNING = {
-  highlightTintRetention: 0.76,
-  midtoneColorStrength: 0.52,
-  localHueCoherence: 0.20,
-  edgeSeparation: 0.16,
+  highlightTintRetention: 0.84,
+  midtoneColorStrength: 0.60,
+  localHueCoherence: 0.18,
+  edgeSeparation: 0.15,
 } as const;
 
 const BIO_PALETTE = {
