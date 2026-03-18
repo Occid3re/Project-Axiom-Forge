@@ -206,11 +206,14 @@ Three layered mechanisms force competitive exclusion and prevent species accumul
    Computed **once per tick (O(1))**:
    ```ts
    const maxPop      = round(gridW * gridH * laws.carryingCapacity);
-   const overRatio   = max(0, n / maxPop - 1);   // 0 at capacity, 1 at 2× cap
-   const airPressure = min(0.04, overRatio * 0.006);  // max 0.04/tick extra drain
+   const overRatio   = max(0, n / maxPop - 1);
+   const airPressure = n > 2048
+     ? 0.5                              // hard cap — mass die-off within 3 ticks
+     : min(0.04, overRatio * 0.006);    // soft zone — gradual pressure
    ```
    Applied inline in the existing entity loop — no extra passes, zero allocation.
-   More entities → more air depletion → weaker ones die faster → negative feedback.
+   - **Soft zone**: proportional drain above `carryingCapacity` threshold → negative feedback
+   - **Hard cap at 2048**: `airPressure = 0.5/tick`; max energy is 1.5 → entities die in ≤3 ticks; weakest (lowest energy) die first; population crashes back below 2048 within a few ticks
 
 3. **Local overcrowding** — each entity with >2 neighbors loses `0.04 × (neighbors − 2)` energy/tick.
 
