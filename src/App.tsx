@@ -91,22 +91,22 @@ export default function App() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [emergence, setEmergence] = useState<EmergenceState>({ stage: -1, progress: new Array(10).fill(0) });
   const [laws, setLaws] = useState<import('./engine/world-laws').WorldLaws | null>(null);
-  const [worldChangePulse, setWorldChangePulse] = useState(false);
-  const prevWIdxRef = useRef<number>(-1);
+  const [bestWorldPulse, setBestWorldPulse] = useState(false);
+  const prevBestScoreRef = useRef<number>(-1);
 
   const socketRef = useRef<Socket | null>(null);
   const addLog = useCallback((msg: string) => setLog(p => [...p.slice(-200), msg]), []);
 
-  // Pulse world indicator when world changes
+  // Pulse best-world indicator when a new best is found (display world refreshes)
   useEffect(() => {
-    const currentWIdx = meta?.worldIndex ?? 0;
-    if (currentWIdx !== prevWIdxRef.current && prevWIdxRef.current !== -1) {
-      setWorldChangePulse(true);
-      const t = setTimeout(() => setWorldChangePulse(false), 1500);
+    const currentBest = meta?.bestScore ?? 0;
+    if (currentBest > prevBestScoreRef.current && prevBestScoreRef.current >= 0) {
+      setBestWorldPulse(true);
+      const t = setTimeout(() => setBestWorldPulse(false), 2000);
       return () => clearTimeout(t);
     }
-    prevWIdxRef.current = currentWIdx;
-  }, [meta?.worldIndex]);
+    prevBestScoreRef.current = currentBest;
+  }, [meta?.bestScore]);
 
   // Detect emergence from latest scores
   useEffect(() => {
@@ -262,25 +262,25 @@ export default function App() {
               </div>
             )}
 
-            {/* World indicator — top center, pulses on world change */}
-            {wTot > 0 && viewMode === 'simulation' && (
+            {/* Best-world indicator — top center, pulses when a new best is found */}
+            {connected && viewMode === 'simulation' && (
               <div
                 className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none z-20 transition-all duration-500"
-                style={{ opacity: worldChangePulse ? 1 : 0.35 }}
+                style={{ opacity: bestWorldPulse ? 1 : 0.3 }}
               >
                 <div
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border"
                   style={{
-                    background: worldChangePulse ? 'rgba(6,182,212,0.15)' : 'rgba(0,0,0,0.5)',
-                    borderColor: worldChangePulse ? 'rgba(6,182,212,0.6)' : 'rgba(255,255,255,0.06)',
-                    color: worldChangePulse ? '#67e8f9' : '#4b5563',
-                    boxShadow: worldChangePulse ? '0 0 12px rgba(6,182,212,0.3)' : 'none',
+                    background: bestWorldPulse ? 'rgba(6,182,212,0.15)' : 'rgba(0,0,0,0.5)',
+                    borderColor: bestWorldPulse ? 'rgba(6,182,212,0.6)' : 'rgba(255,255,255,0.06)',
+                    color: bestWorldPulse ? '#67e8f9' : '#4b5563',
+                    boxShadow: bestWorldPulse ? '0 0 14px rgba(6,182,212,0.35)' : 'none',
                     transition: 'all 0.5s ease',
                   }}
                 >
-                  <span style={{ color: worldChangePulse ? '#22d3ee' : '#374151' }}>⬡</span>
-                  <span>World {wIdx}</span>
-                  <span style={{ opacity: 0.4 }}>/ {wTot}</span>
+                  <span style={{ color: bestWorldPulse ? '#22d3ee' : '#374151' }}>★</span>
+                  <span>Best World</span>
+                  {bestWorldPulse && <span style={{ color: '#22d3ee', fontSize: 9 }}>↑ NEW</span>}
                 </div>
               </div>
             )}
@@ -376,7 +376,7 @@ export default function App() {
           <div className="flex items-center justify-between px-3 sm:px-5 py-2 gap-2 overflow-x-auto">
             <Stat label="Gen"        value={gen + 1}             color="#06b6d4" />
             <div className="w-px h-6 bg-white/[0.05] shrink-0" />
-            <Stat label="World"      value={`${wIdx}/${wTot}`}   color="#6b7280" />
+            <Stat label="Eval"       value={`${wIdx}/${wTot}`}   color="#6b7280" />
             <div className="w-px h-6 bg-white/[0.05] shrink-0" />
             <Stat label="Population" value={pop}                 color={pop > 50 ? '#10b981' : pop > 0 ? '#f59e0b' : '#ef4444'} />
             <div className="w-px h-6 bg-white/[0.05] shrink-0" />
