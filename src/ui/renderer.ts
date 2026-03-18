@@ -85,17 +85,18 @@ const SCENE_FRAG = `
     float slideMask = smoothstep(0.02, 0.12, v_uv.x) * smoothstep(0.02, 0.12, v_uv.y)
       * smoothstep(0.02, 0.12, 1.0 - v_uv.x) * smoothstep(0.02, 0.12, 1.0 - v_uv.y);
     float glassNoise = hash(v_uv * 900.0 + vec2(7.0, 13.0)) * 0.012;
-    vec3 brightBg = vec3(0.94, 0.92, 0.88);
-    brightBg += vec3(0.02, 0.015, 0.01) * sin(u_time * 0.15 + wuv.y * 12.0);
+    float specimenLight = 0.92 + 0.08 * smoothstep(0.95, 0.15, length(v_uv - 0.5) * 1.6);
+    vec3 brightBg = vec3(0.78, 0.76, 0.71) * specimenLight;
+    brightBg += vec3(0.015, 0.012, 0.008) * sin(u_time * 0.15 + wuv.y * 12.0);
     brightBg += vec3(glassNoise);
-    brightBg += vec3(0.03, 0.025, 0.015) * r;
-    brightBg -= vec3(0.10, 0.03, 0.05) * poison * 0.4;
-    brightBg += vec3(0.08, 0.06, 0.02) * glyph * 0.18;
-    brightBg += vec3(0.02, 0.04, 0.03) * (sigR + sigG + sigB) * 0.18;
-    float slideShadow = (1.0 - slideMask) * 0.22;
-    brightBg -= vec3(slideShadow);
+    brightBg += vec3(0.025, 0.020, 0.012) * r;
+    brightBg -= vec3(0.12, 0.05, 0.07) * poison * 0.45;
+    brightBg += vec3(0.09, 0.07, 0.03) * glyph * 0.15;
+    brightBg += vec3(0.015, 0.03, 0.025) * (sigR + sigG + sigB) * 0.14;
+    float slideShadow = (1.0 - slideMask) * 0.30;
+    brightBg -= vec3(slideShadow * 0.85, slideShadow * 0.80, slideShadow * 0.72);
     float glassEdge = (1.0 - slideMask) * 0.45;
-    brightBg += vec3(glassEdge * 0.04, glassEdge * 0.05, glassEdge * 0.06);
+    brightBg += vec3(glassEdge * 0.015, glassEdge * 0.02, glassEdge * 0.025);
 
     vec3 color = mix(darkBg, brightBg, u_specimen);
 
@@ -114,16 +115,16 @@ const SCENE_FRAG = `
       vec3 c11 = vec3(0.72, 0.06, 0.84);  // violet       (predator B)
       vec3 cellCol = mix(mix(c00, c01, speciesH), mix(c10, c11, speciesH), role);
 
-      vec3 brightCell = mix(vec3(0.28, 0.34, 0.40), cellCol * 0.75 + vec3(0.05), 0.55);
-      float body = presence * (1.0 - ringInt) * mix(0.10, 0.20, u_specimen);
-      float membrane = ringInt * mix(1.4, 0.75, u_specimen);
+      vec3 brightCell = mix(vec3(0.14, 0.18, 0.22), cellCol * 0.85 + vec3(0.02), 0.72);
+      float body = presence * (1.0 - ringInt) * mix(0.10, 0.30, u_specimen);
+      float membrane = ringInt * mix(1.4, 1.05, u_specimen);
       color += mix(cellCol, brightCell, u_specimen) * (body + membrane);
 
-      float specimenShadow = presence * (0.12 + ringInt * 0.08);
-      color -= vec3(specimenShadow * 0.18 * u_specimen);
+      float specimenShadow = presence * (0.18 + ringInt * 0.12);
+      color -= vec3(specimenShadow * 0.28 * u_specimen);
 
       float halo = presence * (1.0 - presence) * 4.0;
-      color += mix(cellCol * halo * 0.35, brightCell * halo * 0.10, u_specimen);
+      color += mix(cellCol * halo * 0.35, brightCell * halo * 0.06, u_specimen);
     }
 
     color += vec3(0.01, 0.16, 0.05) * trail.r * 0.30 * (1.0 - u_specimen);
@@ -134,7 +135,7 @@ const SCENE_FRAG = `
     float scaleBarMask =
       step(0.12, v_uv.x) * step(v_uv.x, 0.34) *
       step(0.90, v_uv.y) * step(v_uv.y, 0.92);
-    color = mix(color, vec3(0.20, 0.22, 0.24), scaleBarMask * u_specimen);
+    color = mix(color, vec3(0.08, 0.09, 0.10), scaleBarMask * u_specimen);
 
     float vigR = length(v_uv - 0.5) * 2.0;
     float dishVig = smoothstep(1.05, 0.60, vigR);
