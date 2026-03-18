@@ -32,6 +32,7 @@ export interface WorldSnapshot {
   deaths: number;
   attacks: number;
   signals: number;
+  poisonCoverage: number;   // fraction of cells with poison > 0.1
 }
 
 export interface WorldHistory {
@@ -58,10 +59,14 @@ export class World {
   readonly resources: Float32Array;
   readonly resourceCapacity: Float32Array;
   readonly signals: Float32Array; // [H * W * channels]
+  readonly poison: Float32Array;  // [H * W] toxin concentration 0–1
   readonly entityMap: Int16Array; // -1 or entity index at each cell
   readonly entities: EntityPool;
 
   tick: number = 0;
+
+  // Server pressure: 0 = idle, >0 = server is loaded, world gets harsher
+  serverPressure: number = 0;
 
   // Per-tick counters
   private tickBirths  = 0;
@@ -84,6 +89,7 @@ export class World {
     this.resources        = new Float32Array(cellCount);
     this.resourceCapacity = new Float32Array(cellCount);
     this.signals          = new Float32Array(cellCount * laws.signalChannels);
+    this.poison           = new Float32Array(cellCount);
     this.entityMap        = new Int16Array(cellCount).fill(-1);
     this.entities         = new EntityPool();
 
@@ -146,6 +152,7 @@ export class World {
     this.tickSignals = 0;
 
     this.decaySignals();
+    this.decayPoison();
     this.regenerateResources();
     this.maybeDisaster();
     this.processEntities();
@@ -182,11 +189,27 @@ export class World {
     }
   }
 
+  private decayPoison(): void {
+    // Base decay: ~0.5% per tick. Server pressure slows decay (poison persists longer).
+    const baseDecay = 0.995;
+    const decay = baseDecay - this.serverPressure * 0.01; // at pressure=2: 0.975 (much slower decay)
+    const len = this.poison.length;
+    for (let i = 0; i < len; i++) {
+      this.poison[i] *= decay;
+      if (this.poison[i] < 0.001) this.poison[i] = 0;
+    }
+  }
+
   private regenerateResources(): void {
-    const rate = this.laws.resourceRegenRate;
+    // Server pressure slows resource regen
+    const pressureMul = 1 / (1 + this.serverPressure * 0.5);
+    const rate = this.laws.resourceRegenRate * pressureMul;
     const len  = this.resources.length;
     for (let i = 0; i < len; i++) {
-      this.resources[i] += rate * (this.resourceCapacity[i] - this.resources[i]);
+      // Poison reduces resource capacity locally (toxin kills the agar)
+      const poisonPenalty = this.poison[i] * 0.5;
+      const effectiveCap = this.resourceCapacity[i] * (1 - poisonPenalty);
+      this.resources[i] += rate * (effectiveCap - this.resources[i]);
       if (this.resources[i] > this.resourceCapacity[i]) {
         this.resources[i] = this.resourceCapacity[i];
       }
@@ -194,7 +217,9 @@ export class World {
   }
 
   private maybeDisaster(): void {
-    if (this.rng.random() < this.laws.disasterProbability) {
+    // Server pressure increases disaster probability
+    const disasterProb = this.laws.disasterProbability * (1 + this.serverPressure * 3);
+    if (this.rng.random() < disasterProb) {
       const cx     = this.rng.int(0, this.gridW - 1);
       const cy     = this.rng.int(0, this.gridH - 1);
       const radius = this.rng.int(5, 15);
@@ -236,8 +261,17 @@ export class World {
       // Age, lifespan, and metabolic cost + carrying-capacity air depletion
       entities.age[i]++;
       if (entities.age[i] >= laws.maxAge) { this.killEntity(i); continue; }
-      entities.energy[i] -= laws.idleCost + airPressure;
+      // Server pressure increases base energy costs
+      const pressureCost = this.serverPressure * 0.003;
+      entities.energy[i] -= laws.idleCost + airPressure + pressureCost;
       if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
+
+      // Poison damage — toxin at entity's cell drains energy
+      const poisonHere = this.poison[entities.y[i] * gridW + entities.x[i]];
+      if (poisonHere > 0.01) {
+        entities.energy[i] -= poisonHere * laws.poisonStrength;
+        if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
+      }
 
       // Overcrowding death — density-dependent mortality caps population
       {
@@ -539,15 +573,19 @@ export class World {
   }
 
   private killEntity(i: number): void {
-    const { entities, entityMap, gridW, resources, resourceCapacity } = this;
+    const { entities, entityMap, gridW, resources, resourceCapacity, poison, laws } = this;
     const cellIdx = entities.y[i] * gridW + entities.x[i];
 
     // Corpse ecology: dead entities deposit half their energy back into the grid.
-    // Creates scavenging dynamics — battlefields become resource hotspots,
-    // mass die-offs trigger resource booms, and death feeds life.
     const deposit = entities.energy[i] * 0.5;
     if (deposit > 0) {
       resources[cellIdx] = Math.min(resourceCapacity[cellIdx], resources[cellIdx] + deposit);
+    }
+
+    // Death toxin: dying entities release poison into the environment.
+    // Creates hazardous dead zones around battlefields and mass die-offs.
+    if (laws.deathToxin > 0) {
+      poison[cellIdx] = Math.min(1.0, poison[cellIdx] + laws.deathToxin);
     }
 
     entityMap[cellIdx] = -1;
@@ -607,6 +645,12 @@ export class World {
       if (this.resources[i] > 0.1) filledCells++;
     }
 
+    // Poison coverage
+    let poisonedCells = 0;
+    for (let i = 0; i < this.poison.length; i++) {
+      if (this.poison[i] > 0.1) poisonedCells++;
+    }
+
     return {
       tick: this.tick,
       population: n,
@@ -620,6 +664,7 @@ export class World {
       deaths:  this.tickDeaths,
       attacks: this.tickAttacks,
       signals: this.tickSignals,
+      poisonCoverage: poisonedCells / this.poison.length,
     };
   }
 
@@ -627,6 +672,7 @@ export class World {
   getVisualState(): {
     resources: Float32Array;
     signals: Float32Array;
+    poison: Float32Array;
     entityX: Int32Array;
     entityY: Int32Array;
     entityEnergy: Float32Array;
@@ -640,6 +686,7 @@ export class World {
     return {
       resources:     this.resources,
       signals:       this.signals,
+      poison:        this.poison,
       entityX:       this.entities.x.subarray(0, this.entities.count),
       entityY:       this.entities.y.subarray(0, this.entities.count),
       entityEnergy:  this.entities.energy.subarray(0, this.entities.count),

@@ -44,6 +44,11 @@ export interface WorldLaws {
   // Above this threshold a shared "air" depletion is applied per entity per tick,
   // proportional to how far over capacity the population is.
   carryingCapacity: number;
+
+  // Poison — toxin deposited by dying entities, damages living ones.
+  // Creates hazardous "dead zones" around battlefields and mass die-offs.
+  poisonStrength: number;   // 0.0–0.3: damage per tick at full concentration
+  deathToxin: number;       // 0.0–0.8: poison deposited when an entity dies
 }
 
 interface FloatRange {
@@ -66,6 +71,8 @@ const FLOAT_RANGES: Record<string, FloatRange> = {
   disasterProbability: { min: 0.0, max: 0.05 },
   terrainVariability: { min: 0.0, max: 1.0 },
   carryingCapacity: { min: 0.02, max: 0.30 },
+  poisonStrength: { min: 0.0, max: 0.3 },
+  deathToxin: { min: 0.0, max: 0.8 },
 };
 
 const INT_RANGES: Record<string, { min: number; max: number }> = {
@@ -158,6 +165,8 @@ export function randomLaws(rng: PRNG): WorldLaws {
     maxPerceptionRadius: rng.int(1, 6),
     maxAge: rng.int(200, 800),
     carryingCapacity: rng.uniform(0.02, 0.30),
+    poisonStrength: rng.uniform(0.0, 0.3),
+    deathToxin: rng.uniform(0.0, 0.8),
   };
 }
 
@@ -212,6 +221,8 @@ export function starterLaws(): WorldLaws {
     maxPerceptionRadius:  3,
     maxAge:               300,
     carryingCapacity:     0.10,
+    poisonStrength:       0.05,
+    deathToxin:           0.25,
   };
 }
 

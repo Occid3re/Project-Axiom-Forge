@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 4;
+const STATE_VERSION = 5;
 
 interface SavedState {
   version: number;
@@ -131,7 +131,7 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
   const { gridW: W, gridH: H, entityCount, signalChannels } = vs;
   const channels   = Math.min(signalChannels, 3);
-  const totalBytes = 20 + W * H + W * H * channels + entityCount * 8;
+  const totalBytes = 20 + W * H + W * H * channels + W * H + entityCount * 8;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
@@ -152,6 +152,8 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
         : 0;
     }
   }
+  // Poison grid
+  for (let i = 0; i < W * H; i++) u8[offset++] = Math.min(255, (vs.poison[i] * 255) | 0);
   // X, Y, Energy, Action arrays
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityX[e] & 0xff;
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityY[e] & 0xff;
@@ -225,6 +227,7 @@ export interface MetaBroadcast {
   gridSize:     number;
   evalSpeed:    number;       // effective eval ticks/sec (across all workers)
   serverMs:     number;       // EMA of display world step time (ms)
+  serverPressure: number;     // 0-2: how much the world is punishing creatures for server load
   sampleGenome?: number[];    // 80 MLP weights of the most-energetic display entity
 }
 
@@ -518,6 +521,14 @@ export class SimulationController {
     }
 
     const world = this.displayWorld!;
+
+    // Server pressure: measured from display tick time vs target.
+    // At 33ms target (30fps), a 60ms tick → pressure ≈ 0.8.
+    // Pressure makes the world harsher: less resources, persistent poison, more disasters.
+    const DISPLAY_TARGET_MS = 33;
+    const pressure = Math.min(2, Math.max(0, (this.displayStepMs - DISPLAY_TARGET_MS) / DISPLAY_TARGET_MS));
+    world.serverPressure = pressure;
+
     const t0    = Date.now();
     const snap  = world.step();
     const dt    = Date.now() - t0;
@@ -578,6 +589,7 @@ export class SimulationController {
       gridSize:    DISPLAY_CONFIG.gridSize,
       evalSpeed:    this.evalSpeedSample,
       serverMs:     this.displayStepMs,
+      serverPressure: pressure,
       sampleGenome,
     };
     this.pendingLog = null;

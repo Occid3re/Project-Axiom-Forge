@@ -52,7 +52,8 @@ const SCENE_FRAG = `
     vec4 sig   = texture2D(u_sig,   wuv);
     vec4 trail = texture2D(u_trail, wuv);
 
-    float r = res.r;
+    float r = res.r;      // resource concentration
+    float poison = res.g; // toxin concentration
 
     // Dark microscope field
     vec3 color = vec3(0.004, 0.006, 0.010);
@@ -65,6 +66,12 @@ const SCENE_FRAG = `
     float pulse = 0.92 + 0.08 * sin(u_time * 0.4 + wuv.x * 9.0 + wuv.y * 7.0);
     color += vec3(0.06, 0.13, 0.02) * r * pulse;
     color += vec3(0.10, 0.20, 0.03) * r * r * 1.4 * pulse;
+
+    // Poison — toxic magenta-red glow, pulsing faintly
+    float poisonF = poison / 255.0;
+    float poisonPulse = 0.85 + 0.15 * sin(u_time * 1.2 + wuv.x * 13.0 + wuv.y * 11.0);
+    color += vec3(0.45, 0.02, 0.18) * poisonF * poisonF * poisonPulse * 0.7;
+    color += vec3(0.20, 0.0, 0.08) * poisonF * 0.3;
 
     // Chemical signal fluorescence — three dye channels (subtle, not lightning)
     float sigR = sig.r * sig.r;  // square for softer falloff — only bright when strong
@@ -351,9 +358,13 @@ export class WorldRenderer {
     for (let i = 0; i < trail.length; i++) trail[i] *= 0.92;
 
     // ── Resource texture ─────────────────────────────────────────────────────
+    // R = resource, G = poison, B = resource (kept for shader compat)
     for (let i = 0; i < cells; i++) {
       const v = f.resources[i];
-      resData[i*4] = resData[i*4+1] = resData[i*4+2] = v;
+      const p = f.poison[i];
+      resData[i*4]   = v;            // R: resource
+      resData[i*4+1] = p;            // G: poison concentration
+      resData[i*4+2] = v;            // B: resource (backward compat)
       resData[i*4+3] = 255;
     }
 

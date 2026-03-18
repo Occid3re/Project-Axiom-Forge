@@ -147,8 +147,11 @@ export default function App() {
   const tick     = meta?.tick ?? 0;
   const scores   = meta?.scores ?? null;
   const serverMs = meta?.serverMs ?? 0;
+  const serverPressure = meta?.serverPressure ?? 0;
   // Server load color: green < 5ms, yellow 5–15ms, red > 15ms
   const serverColor = serverMs < 5 ? '#10b981' : serverMs < 15 ? '#f59e0b' : '#ef4444';
+  // Pressure color: invisible when 0, yellow at 0.5, red at 1+
+  const pressureColor = serverPressure < 0.1 ? '#374151' : serverPressure < 0.5 ? '#f59e0b' : '#ef4444';
 
   if (!entered) return <EpilepsyGate onEnter={() => setEntered(true)} />;
 
@@ -344,6 +347,10 @@ export default function App() {
             <Stat label="Best"       value={best.toFixed(2)}    color="#8b5cf6" />
             <div className="w-px h-6 bg-white/[0.05] shrink-0" />
             <Stat label="Server"     value={`${serverMs.toFixed(1)}ms`} color={serverColor} />
+            {serverPressure > 0.05 && <>
+              <div className="w-px h-6 bg-white/[0.05] shrink-0" />
+              <Stat label="Pressure"  value={`${(serverPressure * 100).toFixed(0)}%`} color={pressureColor} />
+            </>}
 
             {/* Sparkline */}
             {meta?.generations && meta.generations.length > 1 && (
