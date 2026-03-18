@@ -99,6 +99,12 @@ export class World {
   private readonly dirGlyph  = new Float64Array(4);
   private readonly dirCount  = new Int32Array(4);
   private readonly processOrder = new Int32Array(MAX_ENTITIES);
+  private readonly colonyParent = new Int32Array(MAX_ENTITIES);
+  private readonly colonyRank = new Uint8Array(MAX_ENTITIES);
+  private readonly colonyRoot = new Int32Array(MAX_ENTITIES);
+  private readonly colonyMembers = new Int32Array(MAX_ENTITIES);
+  private readonly colonyEnergy = new Float32Array(MAX_ENTITIES);
+  private readonly colonyHidden = new Float32Array(MAX_ENTITIES * NN_HIDDEN);
 
   constructor(laws: WorldLaws, config: WorldConfig, seed: number) {
     this.laws   = laws;
@@ -331,6 +337,203 @@ export class World {
     return (dot / denom + 1) * 0.5;
   }
 
+  private findColonyRoot(i: number): number {
+    let root = i;
+    while (this.colonyParent[root] !== root) root = this.colonyParent[root];
+    while (this.colonyParent[i] !== i) {
+      const next = this.colonyParent[i];
+      this.colonyParent[i] = root;
+      i = next;
+    }
+    return root;
+  }
+
+  private unionColonies(a: number, b: number): void {
+    let rootA = this.findColonyRoot(a);
+    let rootB = this.findColonyRoot(b);
+    if (rootA === rootB) return;
+
+    const rankA = this.colonyRank[rootA];
+    const rankB = this.colonyRank[rootB];
+    if (rankA < rankB) {
+      const tmp = rootA;
+      rootA = rootB;
+      rootB = tmp;
+    }
+    this.colonyParent[rootB] = rootA;
+    if (rankA === rankB) this.colonyRank[rootA] = rankA + 1;
+  }
+
+  private syncColonies(kinThresh: number): void {
+    const { entities, entityMap, gridW, gridH, laws } = this;
+    const n = entities.count;
+    const cap = laws.energyCap ?? 1.5;
+
+    for (let i = 0; i < n; i++) {
+      this.colonyParent[i] = i;
+      this.colonyRank[i] = 0;
+      this.colonyRoot[i] = -1;
+      this.colonyMembers[i] = 0;
+      this.colonyEnergy[i] = 0;
+    }
+    this.colonyHidden.fill(0, 0, n * NN_HIDDEN);
+
+    // Orthogonally adjacent kin become a fused multicellular colony.
+    for (let i = 0; i < n; i++) {
+      if (!entities.alive[i]) continue;
+      const x = entities.x[i];
+      const y = entities.y[i];
+
+      const east = entityMap[y * gridW + ((x + 1) % gridW)];
+      if (east >= 0 && east !== i && entities.alive[east] && this.genomeSimilarity(i, east) >= kinThresh) {
+        this.unionColonies(i, east);
+      }
+
+      const south = entityMap[((y + 1) % gridH) * gridW + x];
+      if (south >= 0 && south !== i && entities.alive[south] && this.genomeSimilarity(i, south) >= kinThresh) {
+        this.unionColonies(i, south);
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (!entities.alive[i]) continue;
+      const root = this.findColonyRoot(i);
+      this.colonyRoot[i] = root;
+      this.colonyMembers[root]++;
+      this.colonyEnergy[root] += entities.energy[i];
+      const mOff = i * MAX_MEMORY_SIZE;
+      const cOff = root * NN_HIDDEN;
+      for (let h = 0; h < NN_HIDDEN; h++) {
+        this.colonyHidden[cOff + h] += entities.memory[mOff + h];
+      }
+    }
+
+    // Fused colonies equalize energy and partially synchronize recurrent memory.
+    for (let i = 0; i < n; i++) {
+      if (!entities.alive[i]) continue;
+      const root = this.colonyRoot[i];
+      const members = root >= 0 ? this.colonyMembers[root] : 1;
+      if (members <= 1) continue;
+
+      const meanEnergy = this.colonyEnergy[root] / members;
+      entities.energy[i] += (meanEnergy - entities.energy[i]) * 0.18;
+      if (entities.energy[i] > cap) entities.energy[i] = cap;
+
+      const memoryBlend = Math.min(0.26, 0.08 + (members - 1) * 0.04);
+      const invMembers = 1 / members;
+      const mOff = i * MAX_MEMORY_SIZE;
+      const cOff = root * NN_HIDDEN;
+      for (let h = 0; h < NN_HIDDEN; h++) {
+        const shared = this.colonyHidden[cOff + h] * invMembers;
+        entities.memory[mOff + h] = entities.memory[mOff + h] * (1 - memoryBlend) + shared * memoryBlend;
+      }
+    }
+  }
+
+  private getColonyMemberCount(i: number): number {
+    const root = this.colonyRoot[i];
+    return root >= 0 && this.colonyMembers[root] > 0 ? this.colonyMembers[root] : 1;
+  }
+
+  private colonyMoveMaintainsContact(i: number, nx: number, ny: number): boolean {
+    const { entities, entityMap, gridW, gridH } = this;
+    const root = this.colonyRoot[i];
+    if (root < 0 || this.colonyMembers[root] <= 1) return true;
+
+    const dirs = [
+      [0, -1],
+      [1, 0],
+      [0, 1],
+      [-1, 0],
+    ] as const;
+    for (const [dx, dy] of dirs) {
+      const tx = ((nx + dx) % gridW + gridW) % gridW;
+      const ty = ((ny + dy) % gridH + gridH) % gridH;
+      const neighbor = entityMap[ty * gridW + tx];
+      if (neighbor < 0 || neighbor === i || !entities.alive[neighbor]) continue;
+      if (this.colonyRoot[neighbor] === root) return true;
+    }
+    return false;
+  }
+
+  private getLocalColonySupport(i: number): number {
+    const { entities, entityMap, gridW, gridH } = this;
+    let support = Math.max(0, entities.energy[i] - 0.12);
+    const root = this.colonyRoot[i];
+    if (root < 0 || this.colonyMembers[root] <= 1) return support;
+
+    const ox = entities.x[i];
+    const oy = entities.y[i];
+    const dirs = [
+      [0, -1],
+      [1, 0],
+      [0, 1],
+      [-1, 0],
+    ] as const;
+    for (const [dx, dy] of dirs) {
+      const nx = ((ox + dx) % gridW + gridW) % gridW;
+      const ny = ((oy + dy) % gridH + gridH) % gridH;
+      const donor = entityMap[ny * gridW + nx];
+      if (donor < 0 || donor === i || !entities.alive[donor]) continue;
+      if (this.colonyRoot[donor] !== root) continue;
+      support += Math.max(0, entities.energy[donor] - 0.12) * 0.5;
+    }
+    return support;
+  }
+
+  private fundReproductionFromColony(i: number, cost: number): boolean {
+    const { entities, entityMap, gridW, gridH } = this;
+    let remaining = cost;
+
+    const parentSpend = Math.min(Math.max(0, entities.energy[i] - 0.12), remaining);
+    entities.energy[i] -= parentSpend;
+    remaining -= parentSpend;
+
+    const root = this.colonyRoot[i];
+    if (remaining > 0 && root >= 0 && this.colonyMembers[root] > 1) {
+      const ox = entities.x[i];
+      const oy = entities.y[i];
+      const dirs = [
+        [0, -1],
+        [1, 0],
+        [0, 1],
+        [-1, 0],
+      ] as const;
+      for (const [dx, dy] of dirs) {
+        const nx = ((ox + dx) % gridW + gridW) % gridW;
+        const ny = ((oy + dy) % gridH + gridH) % gridH;
+        const donor = entityMap[ny * gridW + nx];
+        if (donor < 0 || donor === i || !entities.alive[donor]) continue;
+        if (this.colonyRoot[donor] !== root) continue;
+        const donorSpend = Math.min(Math.max(0, entities.energy[donor] - 0.12) * 0.5, remaining);
+        entities.energy[donor] -= donorSpend;
+        remaining -= donorSpend;
+        if (remaining <= 1e-6) break;
+      }
+    }
+
+    return remaining <= 1e-6;
+  }
+
+  private imprintColonyMemory(parentIdx: number, childIdx: number): void {
+    const { entities } = this;
+    const root = this.colonyRoot[parentIdx];
+    const childOff = childIdx * MAX_MEMORY_SIZE;
+    if (root >= 0 && this.colonyMembers[root] > 1) {
+      const cOff = root * NN_HIDDEN;
+      const invMembers = 1 / this.colonyMembers[root];
+      for (let h = 0; h < NN_HIDDEN; h++) {
+        entities.memory[childOff + h] = this.colonyHidden[cOff + h] * invMembers * 0.35;
+      }
+      return;
+    }
+
+    const parentOff = parentIdx * MAX_MEMORY_SIZE;
+    for (let h = 0; h < NN_HIDDEN; h++) {
+      entities.memory[childOff + h] = entities.memory[parentOff + h] * 0.2;
+    }
+  }
+
   private processEntities(): void {
     const { entities, rng, laws, gridW, gridH } = this;
     const n = entities.count;
@@ -355,6 +558,7 @@ export class World {
       : 0;
 
     const kinThresh = laws.kinThreshold ?? 0.8;
+    this.syncColonies(kinThresh);
 
     for (let oi = 0; oi < n; oi++) {
       const i = order[oi];
@@ -445,12 +649,14 @@ export class World {
       const energyNorm = Math.min(1.5, entities.energy[i] / (laws.energyCap ?? 1.5));
       const kinSupport = Math.min(1, kinCount / Math.max(1, crowdThresh));
       const hostileCrowding = Math.min(1, Math.max(0, (nCount - kinCount) / Math.max(1, crowdThresh)));
+      const colonyMembers = this.getColonyMemberCount(i);
+      const colonyMass = Math.min(1, Math.max(0, colonyMembers - 1) / 4);
       const targetSize = Math.max(
         0.7,
-        Math.min(1.9, 0.78 + Math.max(0, energyNorm - 0.45) * 1.15 + kinSupport * 0.45 - hostileCrowding * 0.18),
+        Math.min(1.95, 0.76 + Math.max(0, energyNorm - 0.45) * 1.05 + kinSupport * 0.28 + colonyMass * 0.42 - hostileCrowding * 0.16),
       );
       entities.size[i] += (targetSize - entities.size[i]) * 0.12;
-      entities.energy[i] -= Math.max(0, entities.size[i] - 1) * 0.0025;
+      entities.energy[i] -= Math.max(0, entities.size[i] - 1) * (0.0025 + colonyMass * 0.0008);
       if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
 
       // Decide action from directional perception
@@ -579,7 +785,13 @@ export class World {
       finalY = ny;
     }
 
+    const moveCost = laws.moveCost * speed * (0.85 + entities.size[i] * 0.45);
+
     if (finalX !== ox || finalY !== oy) {
+      if (!this.colonyMoveMaintainsContact(i, finalX, finalY)) {
+        entities.energy[i] -= moveCost * 0.35;
+        return;
+      }
       entityMap[oy * gridW + ox] = -1;
       entities.x[i]      = finalX;
       entities.y[i]      = finalY;
@@ -587,7 +799,7 @@ export class World {
       entities.actionDx[i] = dx;
       entities.actionDy[i] = dy;
     }
-    entities.energy[i] -= laws.moveCost * speed * (0.85 + entities.size[i] * 0.45);
+    entities.energy[i] -= moveCost;
   }
 
   private executeEat(i: number): void {
@@ -603,7 +815,7 @@ export class World {
   private executeReproduce(i: number): void {
     const { entities, laws, rng, gridW, gridH, entityMap } = this;
 
-    if (entities.energy[i] < laws.reproductionCost) return;
+    if (this.getLocalColonySupport(i) < laws.reproductionCost) return;
     if (entities.count >= Math.min(1024, Math.floor(gridW * gridH * 0.07))) return;
 
     const ox = entities.x[i];
@@ -648,7 +860,12 @@ export class World {
         if (childIdx >= 0) {
           entities.mutateGenome(childIdx, laws.mutationRate, laws.mutationStrength, rng);
           entityMap[cell] = childIdx;
-          entities.energy[i] -= laws.reproductionCost;
+          if (!this.fundReproductionFromColony(i, laws.reproductionCost)) {
+            entityMap[cell] = -1;
+            entities.kill(childIdx);
+            return;
+          }
+          this.imprintColonyMemory(i, childIdx);
           entities.size[i] = Math.max(0.78, entities.size[i] * 0.9);
           this.tickBirths++;
         }
