@@ -8,7 +8,7 @@
  *
  * Data textures (resource / entity / signal / trail) use LINEAR filtering
  * so the grid is bilinearly interpolated — no pixel squares.
- * Entities are rendered as rod-shaped bacterial cells via CPU splats.
+ * Entities are rendered as continuous evolved morphologies via CPU splats.
  * Trail texture persists across frames and decays — movement leaves slime wakes.
  *
  * updateFrame(f)  — upload new data (call when a server frame arrives)
@@ -18,6 +18,10 @@
 import type { DecodedEntityFrame, DecodedFieldFrame } from '../engine/protocol';
 
 type CombinedFrame = DecodedEntityFrame & DecodedFieldFrame;
+
+function clamp01(v: number) {
+  return Math.max(0, Math.min(1, v));
+}
 
 // ── Shaders ──────────────────────────────────────────────────────────────────
 
@@ -475,21 +479,23 @@ export class WorldRenderer {
       if (trail[ti] < trailStr) trail[ti] = trailStr;
 
       // ── Body plan classification ─────────────────────────────────────
-      // 10 distinct shapes from genome traits, inspired by real microorganism morphology
+      // Shape is synthesized from evolved behavioural traits instead of fixed plans.
       const aggression = f.entityAggression[e] / 255;
 
-      // Plan IDs: 0=coccus, 1=bacillus, 2=vibrio, 3=amoeba, 4=dividing,
-      //           5=spirillum, 6=diplococcus, 7=filamentous, 8=fusiform, 9=spirochete
-      let plan: number;
-      let planAspect: number;
-      let curvature = 0;      // vibrio bend strength
-      let lobeCount = 0;      // amoeba pseudopod count
-      let lobeAmp = 0;        // amoeba pseudopod depth
-      let pinch = 0;          // dividing / diplococcus constriction
-      let waveAmp = 0;        // spirillum / spirochete wave amplitude
-      let waveFreq = 0;       // spirillum / spirochete wave frequency
-      let taper = 0;          // fusiform end-tapering
-      let chainPinches = 0;   // filamentous chain segments
+      const hue01 = speciesHue / 255;
+      const phase = hue01 * Math.PI * 2 + role * Math.PI;
+      const aspect = 0.70 + 2.05 * clamp01(0.45 * motility + 0.35 * complexity + 0.20 * energy);
+      const curvature = (aggression * 2 - 1) * (0.10 + 0.42 * complexity);
+      const waveAmp = motility * (0.12 + 0.42 * (1 - energy * 0.4));
+      const waveFreq = 1.4 + hue01 * 3.8 + aggression * 1.3;
+      const lobeAmp = complexity * (0.05 + 0.18 * (1 - motility));
+      const lobeFreq = 2.0 + hue01 * 4.0;
+      const taper = 0.08 + 0.40 * (0.55 * aggression + 0.45 * complexity);
+      const pinch = clamp01((energy - 0.48) * 1.1 + complexity * 0.18);
+      const skew = (hue01 * 2 - 1) * (0.08 + 0.16 * motility);
+      const contourRipple = 0.03 + complexity * 0.10 + motility * 0.04;
+      const membraneRuffle = 4 + complexity * 8 + motility * 3;
+      /*
 
       if (energy > 0.7) {
         plan = 4;             // DIVIDING — high energy, about to split
@@ -534,6 +540,7 @@ export class WorldRenderer {
         planAspect = 1.0 + complexity * 1.2;
       }
 
+      */
       // Orientation: species-dependent angle
       const angle = (speciesHue / 255) * Math.PI;
       const cosA = Math.cos(angle);
@@ -541,12 +548,8 @@ export class WorldRenderer {
 
       // Cell size: slight growth with complexity + energy
       const cellR = (1.5 + energy * 1.2 + complexity * 0.5) * renderScale;
-      const shapeExtra = plan === 3 ? (lobeAmp * cellR)
-        : plan === 2 ? (curvature * 2)
-        : (plan === 5 || plan === 9) ? (waveAmp * 1.5)
-        : plan === 7 ? 1.0
-        : 0;
-      const scanR = Math.ceil(cellR + shapeExtra) + 2;
+      const shapeExtra = cellR * (0.45 + waveAmp * 0.9 + lobeAmp * 0.8 + Math.abs(curvature) * 0.6);
+      const scanR = Math.ceil(cellR + shapeExtra) + 3;
 
       // Membrane thickness: thin (early) → thick ruffled (evolved)
       const membraneWidth = 0.30 + complexity * 0.20;
@@ -556,19 +559,29 @@ export class WorldRenderer {
       const organelleStr = complexity * 0.12;
       const organelleFreq = 1.5 + complexity * 3.0;
 
-      // Flagella: only on motile elongated forms (bacillus/vibrio/fusiform)
-      const flagella = (plan === 1 || plan === 2 || plan === 8) ? motility * complexity : 0;
+      // Flagella emerge continuously from motility and elongation, not a fixed plan.
+      const flagella = clamp01((motility - 0.22) * 1.25) * clamp01((aspect - 1.0) / 1.8) * (0.4 + complexity * 0.6);
 
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
           const nx = ((cx + dx) % entW + entW) % entW;
           const ny = ((cy + dy) % entH + entH) % entH;
 
-          // Rotated + elongated local coordinates
+          // Continuous local-coordinate distortion synthesized from evolved traits.
           let ldx = dx * cosA + dy * sinA;
-          const ldy = (-dx * sinA + dy * cosA) * planAspect;
-          let rr: number;
+          let ldy = (-dx * sinA + dy * cosA) * aspect;
+          ldx += curvature * ldy * ldy / Math.max(1.0, cellR * 1.4);
+          ldy -= waveAmp * Math.sin(ldx * waveFreq * 0.55 + phase);
+          const skewedLdx = ldx + skew * ldy;
+          const taperedLdy = ldy * (1.0 + taper * (skewedLdx * skewedLdx) / Math.max(1.0, cellR * cellR));
+          const pixelAngle = Math.atan2(taperedLdy, skewedLdx);
+          const rawR = Math.sqrt(skewedLdx * skewedLdx + taperedLdy * taperedLdy);
+          const lobeMod = 1.0 + lobeAmp * Math.cos(pixelAngle * lobeFreq + phase);
+          const pinchScale = 1.0 - pinch * Math.exp(-skewedLdx * skewedLdx * (1.2 / (cellR * cellR + 0.01)));
+          const ripple = 1.0 + contourRipple * Math.sin(pixelAngle * membraneRuffle + phase * 0.7);
+          const rr = rawR / Math.max(0.45, lobeMod * pinchScale * ripple);
 
+          /*
           if (plan === 2) {
             // VIBRIO: bend x-axis quadratically → comma/crescent shape
             ldx = ldx + curvature * ldy * ldy;
@@ -606,13 +619,15 @@ export class WorldRenderer {
             rr = Math.sqrt(ldx * ldx + ldy * ldy);
           }
 
+          */
           // Flagella: extend presence along the long axis beyond the cell body
           let flagellaVal = 0;
-          if (flagella > 0.15 && Math.abs(ldy) < 0.6) {
-            const poleR = Math.abs(ldx) - cellR;
-            if (poleR > 0 && poleR < flagella * 3.0) {
-              const wave = 0.5 + 0.5 * Math.sin(poleR * 4.0 + ldy * 8.0);
-              flagellaVal = (1.0 - poleR / (flagella * 3.0)) * wave * 0.35 * flagella;
+          if (flagella > 0.08 && Math.abs(taperedLdy) < 0.85) {
+            const poleR = Math.abs(skewedLdx) - cellR;
+            const flagellaReach = cellR * (0.8 + flagella * 1.8);
+            if (poleR > 0 && poleR < flagellaReach) {
+              const wave = 0.5 + 0.5 * Math.sin(poleR * (3.4 + waveFreq * 0.25) + taperedLdy * (5.0 + motility * 4.0));
+              flagellaVal = (1.0 - poleR / flagellaReach) * wave * (0.18 + flagella * 0.32);
             }
           }
 
@@ -628,7 +643,7 @@ export class WorldRenderer {
           } else if (rr < cellR * membraneStart) {
             // Cytoplasm — internal organelles appear with evolution
             const organelles = organelleStr *
-              (0.5 + 0.5 * Math.sin(ldx * organelleFreq) * Math.cos(ldy * organelleFreq * 0.7));
+              (0.5 + 0.5 * Math.sin(skewedLdx * organelleFreq + phase) * Math.cos(taperedLdy * organelleFreq * 0.7));
             ringVal     = 0.05 + organelles;
             presenceVal = 1.0;
           } else if (rr <= cellR) {
@@ -637,7 +652,7 @@ export class WorldRenderer {
             const base = Math.sin(Math.PI * t);
             // Evolved membranes get ruffles (high-frequency wobble)
             const ruffle = complexity > 0.3
-              ? 1.0 + complexity * 0.15 * Math.sin(Math.atan2(ldy, ldx) * (6 + complexity * 10))
+              ? 1.0 + complexity * 0.15 * Math.sin(pixelAngle * (6 + complexity * 10) + phase * 0.5)
               : 1.0;
             ringVal     = (0.75 + complexity * 0.20) * base * ruffle;
             presenceVal = 1.0;
