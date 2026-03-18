@@ -326,18 +326,23 @@ Loaded on startup (version check). Survives redeploys because the file is outsid
 
 **Cached texture buffers**: CPU-side Uint8Arrays (`_resBuf`, `_entBuf`, `_sigBuf`, `_trailBuf`) are allocated once per grid size change via `ensureTexBufs(n)` instead of per-frame. Eliminates ~1MB/frame GC pressure.
 
-### 5 Distinct Body Plans (genome-driven morphology)
+### 10 Distinct Body Plans (genome-driven morphology)
 Each entity is splatted onto a W×H RGBA texture. Body plan selected from genome traits:
 
-| Plan | Shape | Selection Criteria | Visual |
-|---|---|---|---|
-| **Coccus** | Round sphere | low aggression + low complexity | Simple round dot |
-| **Bacillus** | Elongated rod | moderate complexity (default) | Rod with optional flagella |
-| **Vibrio** | Comma/crescent | aggression > 0.55 | Curved body (`ldx += curvature * ldy²`) |
-| **Amoeba** | Star/pseudopods | complexity > 0.5 + motility < 0.4 | Angular lobes (`cellR * (1 + amp * cos(angle * N))`) |
-| **Dividing** | Hourglass | energy > 0.7 | Pinched center (Gaussian constriction) |
+| # | Plan | Shape | Selection Criteria | Distance Distortion |
+|---|---|---|---|---|
+| 0 | **Coccus** | Round sphere | low aggression + low complexity | Standard ellipse (aspect ≈ 1.0) |
+| 1 | **Bacillus** | Elongated rod | moderate complexity (default) | Standard ellipse + flagella |
+| 2 | **Vibrio** | Comma/crescent | aggression > 0.55 | `ldx += curvature * ldy²` (quadratic bend) |
+| 3 | **Amoeba** | Star/pseudopods | complexity > 0.5 + motility < 0.4 | `rr = rawR / (1 + amp * cos(angle * N))` |
+| 4 | **Dividing** | Hourglass | energy > 0.7 | Gaussian center pinch on ldy |
+| 5 | **Spirillum** | Corkscrew wave | motility > 0.7 + complexity > 0.5 | `ldy -= amp * sin(ldx * freq)` |
+| 6 | **Diplococcus** | Paired circles | mid energy + complex + sessile | Gaussian center pinch (gentler) |
+| 7 | **Filamentous** | Chain of cells | complexity > 0.7 + motility < 0.35 | Periodic `cos()` pinches along long axis |
+| 8 | **Fusiform** | Diamond/spindle | moderate aggression + complex | `ldy *= (1 + taper * ldx²/cellR²)` |
+| 9 | **Spirochete** | Thin undulating | motility > 0.75 + low complexity | High aspect + sinusoidal wave |
 
-All plans share membrane ring, organelle, and halo rendering. Flagella only on bacillus/vibrio.
+All plans share membrane ring, organelle, and halo rendering. Flagella on bacillus/vibrio/fusiform only.
 - RGBA: R=presence intensity, G=speciesHue, B=role(attack+signal blend), A=presence mask
 
 ### Phase-Contrast Microscopy Shader

@@ -384,29 +384,57 @@ export class WorldRenderer {
       if (trail[ti] < trailStr) trail[ti] = trailStr;
 
       // ── Body plan classification ─────────────────────────────────────
-      // 5 distinct shapes from genome traits: coccus, bacillus, vibrio, amoeba, dividing
+      // 10 distinct shapes from genome traits, inspired by real microorganism morphology
       const aggression = f.entityAggression[e] / 255;
 
-      let plan: number;       // 0=coccus, 1=bacillus, 2=vibrio, 3=amoeba, 4=dividing
+      // Plan IDs: 0=coccus, 1=bacillus, 2=vibrio, 3=amoeba, 4=dividing,
+      //           5=spirillum, 6=diplococcus, 7=filamentous, 8=fusiform, 9=spirochete
+      let plan: number;
       let planAspect: number;
       let curvature = 0;      // vibrio bend strength
       let lobeCount = 0;      // amoeba pseudopod count
       let lobeAmp = 0;        // amoeba pseudopod depth
-      let pinch = 0;          // dividing constriction
+      let pinch = 0;          // dividing / diplococcus constriction
+      let waveAmp = 0;        // spirillum / spirochete wave amplitude
+      let waveFreq = 0;       // spirillum / spirochete wave frequency
+      let taper = 0;          // fusiform end-tapering
+      let chainPinches = 0;   // filamentous chain segments
 
       if (energy > 0.7) {
         plan = 4;             // DIVIDING — high energy, about to split
         planAspect = 1.4 + complexity * 0.6;
         pinch = 0.35 + (energy - 0.7) * 1.5;
+      } else if (motility > 0.7 && complexity > 0.5) {
+        plan = 5;             // SPIRILLUM — fast evolved swimmers, corkscrew body
+        planAspect = 1.8 + complexity * 0.8;
+        waveAmp = 0.4 + motility * 0.4;
+        waveFreq = 2.5 + complexity * 2.0;
+      } else if (motility > 0.75 && complexity < 0.4) {
+        plan = 9;             // SPIROCHETE — thin undulating wave, primitive fast movers
+        planAspect = 2.5 + motility * 1.0;
+        waveAmp = 0.6 + motility * 0.3;
+        waveFreq = 3.0;
       } else if (aggression > 0.55) {
         plan = 2;             // VIBRIO — predators are comma-shaped
         planAspect = 1.3 + complexity * 0.8;
         curvature = 0.25 + aggression * 0.35;
+      } else if (complexity > 0.7 && motility < 0.35) {
+        plan = 7;             // FILAMENTOUS — very evolved sessile, chain of linked cells
+        planAspect = 2.5 + complexity * 1.5;
+        chainPinches = 2 + Math.floor(complexity * 3); // 2-5 segments
       } else if (complexity > 0.5 && motility < 0.4) {
         plan = 3;             // AMOEBA — evolved sessile → star-shaped pseudopods
         planAspect = 1.0 + complexity * 0.3;
-        lobeCount = 3 + Math.floor(complexity * 4); // 3-7 lobes
+        lobeCount = 3 + Math.floor(complexity * 4);
         lobeAmp = 0.25 + complexity * 0.25;
+      } else if (aggression > 0.35 && aggression <= 0.55 && complexity > 0.3) {
+        plan = 8;             // FUSIFORM — spindle/diamond, moderate predators
+        planAspect = 1.5 + complexity * 0.7;
+        taper = 0.4 + aggression * 0.4;
+      } else if (energy > 0.45 && energy <= 0.7 && complexity > 0.3 && motility < 0.5) {
+        plan = 6;             // DIPLOCOCCUS — paired cells, cooperative/about to divide
+        planAspect = 1.0 + complexity * 0.2;
+        pinch = 0.5 + complexity * 0.3;
       } else if (complexity < 0.3 && aggression < 0.35) {
         plan = 0;             // COCCUS — simple round cells
         planAspect = 1.0 + complexity * 0.15;
@@ -422,7 +450,11 @@ export class WorldRenderer {
 
       // Cell size: slight growth with complexity + energy
       const cellR = 1.5 + energy * 1.2 + complexity * 0.5;
-      const shapeExtra = plan === 3 ? (lobeAmp * cellR) : plan === 2 ? (curvature * 2) : 0;
+      const shapeExtra = plan === 3 ? (lobeAmp * cellR)
+        : plan === 2 ? (curvature * 2)
+        : (plan === 5 || plan === 9) ? (waveAmp * 1.5)
+        : plan === 7 ? 1.0
+        : 0;
       const scanR = Math.ceil(cellR + shapeExtra) + 2;
 
       // Membrane thickness: thin (early) → thick ruffled (evolved)
@@ -433,8 +465,8 @@ export class WorldRenderer {
       const organelleStr = complexity * 0.12;
       const organelleFreq = 1.5 + complexity * 3.0;
 
-      // Flagella: only on motile elongated forms (bacillus/vibrio)
-      const flagella = (plan === 1 || plan === 2) ? motility * complexity : 0;
+      // Flagella: only on motile elongated forms (bacillus/vibrio/fusiform)
+      const flagella = (plan === 1 || plan === 2 || plan === 8) ? motility * complexity : 0;
 
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
@@ -457,12 +489,28 @@ export class WorldRenderer {
             const rawR = Math.sqrt(ldx * ldx + ldy * ldy);
             const lobePhase = (speciesHue / 255) * Math.PI * 2;
             const modulation = 1.0 + lobeAmp * Math.cos(pixelAngle * lobeCount + lobePhase);
-            rr = rawR / modulation; // lobes "pull outward"
-          } else if (plan === 4) {
-            // DIVIDING: hourglass pinch at center
+            rr = rawR / modulation;
+          } else if (plan === 4 || plan === 6) {
+            // DIVIDING / DIPLOCOCCUS: hourglass pinch at center
             const pinchFactor = 1.0 - pinch * Math.exp(-ldx * ldx * 2.0);
             const pinchedLdy = ldy / Math.max(0.3, pinchFactor);
             rr = Math.sqrt(ldx * ldx + pinchedLdy * pinchedLdy);
+          } else if (plan === 5 || plan === 9) {
+            // SPIRILLUM / SPIROCHETE: sinusoidal wave body
+            // Displace perpendicular to long axis with sine wave
+            const waveLdy = ldy - waveAmp * Math.sin(ldx * waveFreq);
+            rr = Math.sqrt(ldx * ldx + waveLdy * waveLdy);
+          } else if (plan === 7) {
+            // FILAMENTOUS: chain of linked cells — periodic radius pinches
+            const chainFreq = Math.PI * chainPinches / (cellR * 2);
+            const chainMod = 1.0 - 0.35 * (0.5 + 0.5 * Math.cos(ldx * chainFreq));
+            const modLdy = ldy / Math.max(0.4, chainMod);
+            rr = Math.sqrt(ldx * ldx + modLdy * modLdy);
+          } else if (plan === 8) {
+            // FUSIFORM: diamond/spindle — tapered ends
+            const taperFactor = 1.0 + taper * (ldx * ldx) / (cellR * cellR);
+            const taperedLdy = ldy * taperFactor;
+            rr = Math.sqrt(ldx * ldx + taperedLdy * taperedLdy);
           } else {
             // COCCUS / BACILLUS: standard ellipse
             rr = Math.sqrt(ldx * ldx + ldy * ldy);
