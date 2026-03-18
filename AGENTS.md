@@ -77,10 +77,12 @@ Bytes 20...: W*H resource bytes (uint8, 0–255)
            + entityCount Action values   (0–5)
            + entityCount Aggression      (W2 ATTACK column mean, sigmoid → 0–255)
            + entityCount SpeciesHue      (W2 SIGNAL + W2 EAT column blend → 0–255)
+           + entityCount Complexity      (genome weight std dev, sigmoid → 0–255)
+           + entityCount Motility        (W2 MOVE column mean, sigmoid → 0–255)
 ```
-**CRITICAL**: entity arrays are written **sequentially** (all X, then all Y, etc.) not interleaved. The decoder in `protocol.ts` expects this layout.
+**CRITICAL**: entity arrays are written **sequentially** (all X, then all Y, etc.) not interleaved. The decoder in `protocol.ts` expects this layout. Total: 8 entity arrays per frame.
 
-**Aggression / SpeciesHue derivation from MLP weights** (genome = 80 floats, W2 starts at index 32):
+**Aggression / SpeciesHue / Complexity / Motility derivation from MLP weights** (genome = 80 floats, W2 starts at index 32):
 ```ts
 // ATTACK column (a=5): how strongly this network hunts
 attackSum = sum_h(genome[32 + h*6 + 5]) for h=0..7
@@ -90,6 +92,14 @@ aggression255 = sigmoid(attackSum * 0.4) * 255
 sigTend = sigmoid(sum_h(genome[32 + h*6 + 4]) * 0.3)
 eatTend = sigmoid(sum_h(genome[32 + h*6 + 2]) * 0.3)
 species255 = (sigTend * 0.6 + eatTend * 0.4) * 255
+
+// Complexity: genome weight standard deviation → evolution stage indicator
+std = sqrt(variance(all 80 genome weights))
+complexity255 = sigmoid((std - 1.2) * 2.5) * 255
+
+// Motility: MOVE column (a=1) drive
+moveSum = sum_h(genome[32 + h*6 + 1])
+motility255 = sigmoid(moveSum * 0.3) * 255
 ```
 
 ---
@@ -229,20 +239,30 @@ Three layered mechanisms force competitive exclusion and prevent species accumul
 
 3. **Local overcrowding** — each entity with >2 neighbors loses `0.04 × (neighbors − 2)` energy/tick.
 
-### Scoring (6 metrics → `scores.total`)
-| Metric | Weight | What it rewards |
-|---|---|---|
-| persistence | 1.0 | Fraction of ticks with living population |
-| diversity | 1.5 | Mean pairwise genome distance (normalised by √GENOME_LENGTH) |
-| complexityGrowth | 1.5 | Diversity increasing + population stability |
-| communication | 2.5 | Signal-birth correlation (meaningful signals) |
-| envStructure | 1.0 | Variance in resource coverage |
-| adaptability | 1.8 | Recovery from population crashes |
+### Scoring (7 metrics → `scores.total`)
+
+Anti-gaming measures prevent degenerate "mutation soup" strategies from scoring well.
+
+| Metric | Weight | What it rewards | Anti-gaming |
+|---|---|---|---|
+| persistence | 1.0 | Fraction of ticks alive + population dynamism | — |
+| diversity | 1.0 | Mean pairwise genome distance (√GENOME_LENGTH normalized) | ×chaosFactor: `1/(1 + mutRate×mutStrength×10)` |
+| complexityGrowth | 1.5 | Sustained diversity growth across 4 quarters + pop stability | ×chaosFactor + requires monotonic multi-quarter increase |
+| communication | 2.0 | Lagged signal→birth correlation (lag 5–15 ticks) | Temporal lag prevents same-tick coincidence gaming |
+| envStructure | 1.0 | Variance in resource coverage | — |
+| adaptability | 1.8 | Recovery from population crashes | — |
+| speciation | 1.5 | Variance of pairwise genome distances (high = clusters = real species) | Random drift → low variance; real species → high variance |
+
+**Chaos factor** prevents high-mutation strategies from getting free diversity points:
+- starterLaws (mutRate=0.06, mutStrength=0.06): chaosFactor = 0.96× (negligible penalty)
+- Degenerate (mutRate=0.477, mutStrength=0.3): chaosFactor = 0.41× (harsh discount)
+
+**Max theoretical score**: ~10.8 (but chaos discount and lagged correlation make >8.0 genuinely hard)
 
 ### CPU Efficiency Penalty
 After scoring each eval world (computed in eval-worker.ts):
 ```
-avgTickMs = wallClock(800 steps) / 800
+avgTickMs = wallClock(1600 steps) / 1600
 overload  = max(0, avgTickMs / 0.8ms - 1)
 cpuFactor = 1 / (1 + overload * 0.6)
 score    *= cpuFactor
@@ -251,12 +271,24 @@ Worlds that slow the server get penalized. Evolution selects for lean physics.
 
 ### Meta-Evolution Config (EVAL_CONFIG)
 - `gridSize`: 64×64 for fast evaluation
-- `worldSteps`: 800 ticks per candidate
-- `worldsPerGeneration`: 10 candidates per generation (run in parallel on workers)
-- `topK`: 2 survivors (strong selection)
+- `worldSteps`: 1600 ticks per candidate (doubled from 800 — more entity generations per eval)
+- `worldsPerGeneration`: 12 candidates per generation (run in parallel on workers)
+- `topK`: 3 survivors (broader genetic diversity in population)
 - `mutationStrength`: 0.08 (for WorldLaws, not entity genomes)
-- Stagnation: after 30 generations <1% improvement → inject 25% random + 2× mutation
-- Gen-0 seeded with 4 `starterLaws()` variants + 6 random
+- Gen-0 seeded with 4 `starterLaws()` variants + 8 random
+
+### Escalating Stagnation
+
+When meta-evolution finds no improvement for N generations, increasingly aggressive measures fire:
+
+| Stagnation (gens) | Tier | Action |
+|---|---|---|
+| 30 | Mild | 25% random injection, 2× mutation on survivors |
+| 100 | Aggressive | 50% random injection, 4× mutation on survivors |
+| 300 | Hard Reset | Keep alltime best + starter variants, reseed rest fully random. Resets stagnation counter. |
+
+The hard reset at 300 gens forces the meta-evolution to re-explore the law space from scratch
+while preserving the best discovery so far. This prevents permanent trapping in local optima.
 
 ### Display Config (DISPLAY_CONFIG)
 - `gridSize`: 256×256 (large, spatially rich)
@@ -268,27 +300,41 @@ Worlds that slow the server get penalized. Evolution selects for lean physics.
 ### State Persistence
 On every new best score and every generation end, saves to `STATE_PATH`:
 ```json
-{ "version": 2, "generation": N, "bestScore": X, "bestLaws": {...},
+{ "version": 3, "generation": N, "bestScore": X, "bestLaws": {...},
   "lastImprovementGen": N, "generationSummaries": [...], "population": [...] }
 ```
 Loaded on startup (version check). Survives redeploys because the file is outside `server/`.
+**STATE_VERSION=3** — incremented when scoring semantics change (old scores are incomparable).
 
 ---
 
 ## Rendering Pipeline
 
-### WorldRenderer (4-pass, adaptive quality)
-1. **Scene pass** → FBO_scene: resources=amber-green glow, signals=3-channel fluorescence, entities=cell ring pattern
+### WorldRenderer (4-pass, adaptive quality — bacteria microscope aesthetic)
+1. **Scene pass** → FBO_scene: phase-contrast microscopy shader — agar substrate, squared signal fluorescence, entity presence halos, film grain, circular eyepiece vignette
 2. **H-blur** FBO_scene → FBO_blurA (half resolution): 9-tap Gaussian
 3. **V-blur** FBO_blurA → FBO_blurB (half resolution): 9-tap Gaussian
-4. **Composite** FBO_scene + FBO_blurB → canvas: screen blend + chromatic aberration + gamma + `u_fade`
+4. **Composite** FBO_scene + FBO_blurB → canvas: screen blend + barrel distortion + chromatic aberration + gamma + `u_fade`
 
 **Adaptive quality**: EMA of frame delta. If avg > 22ms, skip blur passes (blit path).
 
-### Cell Ring Rendering
-Each entity is splatted onto a W×H RGBA texture:
-- Bright nucleus → dark cytoplasm → membrane ring → outer glow
-- RGBA: R=ring intensity, G=speciesHue, B=role(attack+signal blend), A=presence
+**Cached texture buffers**: CPU-side Uint8Arrays (`_resBuf`, `_entBuf`, `_sigBuf`, `_trailBuf`) are allocated once per grid size change via `ensureTexBufs(n)` instead of per-frame. Eliminates ~1MB/frame GC pressure.
+
+### Evolution-Driven Bacteria Morphology
+Each entity is splatted onto a W×H RGBA texture with shape driven by genome traits:
+- **Complexity** (genome weight std dev, 0–1): controls aspect ratio (1.0 → 2.2), membrane ruffling amplitude, organelle visibility
+- **Motility** (W2 MOVE column, 0–1): drives flagella growth — wavy polar extensions visible at high motility × complexity
+- **SpeciesHue**: determines rod orientation angle (species-dependent)
+- Low-complexity entities appear as round coccus shapes; high-complexity as elongated rods with organelles, ruffled membranes, and flagella
+- RGBA: R=presence intensity, G=speciesHue, B=role(attack+signal blend), A=presence mask
+
+### Phase-Contrast Microscopy Shader
+- **Agar substrate**: warm off-white with procedural noise texture
+- **Resource visualization**: amber-green glow through substrate
+- **Signal fluorescence**: squared values (`sig.r * sig.r`) for soft falloff — prevents "lightning" flash when few entities present. Multipliers: R=0.5, G=0.45, B=0.40
+- **Presence halos**: bright membrane edge via `presence * (1 - presence) * 4.0` — phase-contrast ring effect
+- **Film grain**: procedural `hash(uv + time)` noise
+- **Eyepiece vignette**: `smoothstep(1.05, 0.60, vigR)` circular fade
 
 ### Species Color Palette (derived from MLP W2 columns)
 ```
@@ -376,9 +422,10 @@ permanently raising resource capacity at that cell. Entities that build "nests"
 support larger colonies. Implements Stage 3 (External Memory) and Stage 4 (Tool Use).
 
 **B. Hebbian memory**
-Current memory slots are allocated but not read by the MLP. Add memory as additional
-MLP inputs (expand to 8 inputs: 4 sensory + 4 memory), growing genome to 8×8+8×6=112 weights.
-Add Hebbian correlation update for richer internal state.
+Memory slots 0–7 are now used for Elman recurrent hidden state. Next step: add memory as
+explicit MLP inputs (expand to 8 inputs: 4 sensory + 4 memory), growing genome to
+8×8+8×6=112 weights. Add Hebbian correlation update for richer internal state beyond
+simple hidden-state persistence.
 
 **C. Directed semantic signaling**
 Have signals carry sender behaviour fingerprint. Receivers that detect matching
@@ -413,7 +460,7 @@ Static screenshot for social sharing previews. Add `<meta og:image>` to `index.h
 | 1 Communication | ✅ signals exist | Semantic signal content |
 | 2 External Memory | Partial | DEPOSIT action + memory as MLP input |
 | 3 Tool Use | Not yet | Deposit + signal reading = constructed niches |
-| 4 Abstraction | ✅ MLP genome | Hebbian memory as additional inputs |
+| 4 Abstraction | ✅ Elman recurrent + MLP genome | Hebbian memory as additional inputs |
 | 5 Civilization | Not yet | Species specialization + directed signal exchange |
 | 6 World Engineering | Meta-evolving | Entities modifying own mutation rate |
 | 7 Recursive Threshold | Not yet | Signal patterns encoding offspring behaviour |
@@ -429,14 +476,14 @@ Static screenshot for social sharing previews. Add `<meta og:image>` to `index.h
 - **Entity limit**: MAX_ENTITIES=4096. Hard reproduction cap at 7% grid cells means the
   entity limit is never reached in practice.
 
-- **Memory slots allocated but unused**: WorldLaws still has `memorySize`/`memoryPersistence`
-  and EntityPool allocates memory arrays, but `updateMemory()` is not called (removed when
-  switching to MLP genome). Memory arrays are future expansion space for Hebbian inputs.
+- **Elman memory slots**: Memory slots 0–7 store hidden state for the recurrent network.
+  `memoryPersistence` world law controls carry-over blend. Newborns (age ≤ 1) get pure reactive
+  state seeded into memory on first tick to avoid dampening.
 
 - **Signal saturation**: signals clamped to uint8 at pack time. Very high signal values
   saturate. Not currently a problem.
 
-- **State file versioning**: STATE_VERSION=2. Increment if SavedState shape changes.
+- **State file versioning**: STATE_VERSION=3. Increment if SavedState shape or scoring semantics change.
 
 - **tsx worker inheritance**: Workers spawned with `new Worker(path)` inherit the tsx ESM
   loader from the parent process (tsx v4.7+). No `execArgv` needed.
@@ -449,10 +496,46 @@ Static screenshot for social sharing previews. Add `<meta og:image>` to `index.h
 ## Performance Notes
 
 - Eval: workers run in parallel. 2-vCPU VPS → 2 workers → ~2× throughput vs single-threaded.
-  Each 800-step world ≈ 0.5–2s depending on entity count. ~20–40 worlds/minute effective.
+  Each 1600-step world ≈ 1–4s depending on entity count. ~10–20 worlds/minute effective.
 - Display: 256×256 + ~200 entities at 30fps. ~10ms/step. Well within 33ms budget.
 - Frame size: ~328KB per frame × 30fps ≈ **9.8MB/s per viewer**.
 - `sampleGenome` in meta: 80 floats as JSON ≈ 800 bytes per broadcast. Negligible.
 - NeuralNetView: 80 connections × 2 particles = 160 particles in a Canvas2D RAF loop.
   Zero allocation per frame (pre-allocated Float32Array for particles). ~0.5ms on any device.
 - `serverMs` broadcast: EMA of display world step time, shown in UI as health indicator.
+
+---
+
+## Diagnostic Log: Overnight Run (2026-03-18)
+
+### Observation
+After running overnight (~11K generations), meta-evolution plateaued at best score **8.185/9.3** (88% of theoretical max). Stagnation counter reached **288 generations** with identical diversity injection firing every gen — no improvement.
+
+### Best Laws (Degenerate Optimum)
+```
+reproductionCost: 0.1    (minimum — breed as fast as possible)
+mutationRate:     0.477  (near maximum 0.5 — maximum random drift)
+mutationStrength: 0.3    (maximum — large mutations)
+resourceRegenRate: 0.001 (minimum — scarce resources)
+eatGain:          0.989  (near maximum — grab everything)
+sexualReproduction: false (faster reproduction)
+memoryPersistence: 0.528 (moderate recurrence)
+```
+
+### Root Causes Identified
+1. **Diversity was free**: High mutRate × mutStrength produced genome distance through random drift, not selection. The scoring rewarded this as real diversity.
+2. **Communication was cheap**: Same-tick signal-birth correlation captured coincidental correlations, not causal communication.
+3. **ComplexityGrowth rewarded chaos**: With high mutation, diversity always increases from first to last quarter.
+4. **800 ticks too short**: Only 2–4 entity generations per eval — not enough for multi-generational evolutionary dynamics.
+5. **Stagnation escape never escalated**: Same mild injection (25% random, 2× mutation) fired every generation for 288 gens without escalation.
+6. **Score ceiling nearly saturated**: 88% of max left almost no gradient for further improvement.
+
+### Fixes Applied
+1. **Chaos factor discount** — `1/(1 + mutRate×mutStrength×10)` applied to diversity and complexityGrowth scores. Degenerate laws get 0.41× discount.
+2. **Lagged communication** — Correlation computed with lag 5–15 ticks (signal → future births), not same-tick.
+3. **Multi-quarter complexity** — Requires sustained monotonic growth across all 4 quarters, not just first-vs-last jump.
+4. **Speciation metric (new)** — Variance of pairwise genome distances. High variance = genome clusters = real species. Random drift = uniform distances = low score.
+5. **1600 eval steps** — Doubled from 800 for deeper multi-generational dynamics.
+6. **Escalating stagnation** — 3 tiers: mild (30 gen), aggressive (100 gen), hard reset (300 gen).
+7. **Larger population** — 12 candidates (was 10), 3 survivors (was 2) for broader search.
+8. **STATE_VERSION bumped to 3** — Forces clean restart with new scoring semantics.

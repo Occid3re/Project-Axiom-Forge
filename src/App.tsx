@@ -282,6 +282,7 @@ export default function App() {
                   ['Communication', scores.communication,    '#06b6d4'],
                   ['Env Structure', scores.envStructure,     '#f59e0b'],
                   ['Adaptability',  scores.adaptability,     '#f97316'],
+                  ['Speciation',    scores.speciation ?? 0,  '#a855f7'],
                 ] as [string, number, string][]).map(([label, val, color]) => (
                   <div key={label} className="mb-1.5">
                     <div className="flex justify-between text-[8px] mb-0.5">
@@ -371,6 +372,7 @@ export default function App() {
                     ['Signal',   scores.communication,    '#06b6d4'],
                     ['Environ',  scores.envStructure,     '#f59e0b'],
                     ['Adapt',    scores.adaptability,     '#f97316'],
+                    ['Species',  scores.speciation ?? 0,  '#a855f7'],
                   ] as [string, number, string][]).map(([label, val, color]) => (
                     <div key={label} className="flex flex-col items-center shrink-0 min-w-[36px]">
                       <div className="w-6 h-6 rounded-full flex items-center justify-center mb-0.5"

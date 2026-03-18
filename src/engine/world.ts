@@ -25,6 +25,7 @@ export interface WorldSnapshot {
   meanEnergy: number;
   totalEnergy: number;
   diversity: number;
+  diversityVariance: number;  // variance of pairwise distances — high = clusters (speciation)
   signalActivity: number;
   resourceCoverage: number;
   births: number;
@@ -573,8 +574,10 @@ export class World {
     // Diversity: mean normalised pairwise genome distance
     // Divided by sqrt(GENOME_LENGTH) so the metric is scale-invariant across genome sizes
     let diversity  = 0;
+    let diversityVariance = 0;
     const sampleSize = Math.min(n, 20);
     let pairs = 0;
+    let distSum2 = 0;  // sum of squared distances for variance
     for (let a = 0; a < sampleSize; a++) {
       for (let b = a + 1; b < sampleSize; b++) {
         const ga = entities.getGenome(a);
@@ -583,11 +586,16 @@ export class World {
         for (let g = 0; g < GENOME_LENGTH; g++) {
           const d = ga[g] - gb[g]; dist += d * d;
         }
-        diversity += Math.sqrt(dist) / Math.sqrt(GENOME_LENGTH);
+        const normDist = Math.sqrt(dist) / Math.sqrt(GENOME_LENGTH);
+        diversity += normDist;
+        distSum2 += normDist * normDist;
         pairs++;
       }
     }
-    if (pairs > 0) diversity /= pairs;
+    if (pairs > 0) {
+      diversity /= pairs;
+      diversityVariance = distSum2 / pairs - diversity * diversity;
+    }
 
     // Signal activity
     let signalActivity = 0;
@@ -605,6 +613,7 @@ export class World {
       meanEnergy: n > 0 ? totalEnergy / n : 0,
       totalEnergy,
       diversity,
+      diversityVariance,
       signalActivity,
       resourceCoverage: filledCells / this.resources.length,
       births:  this.tickBirths,

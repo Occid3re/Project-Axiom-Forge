@@ -2,8 +2,8 @@
  * Eval worker — runs one complete eval world per job, on a dedicated OS thread.
  *
  * Protocol:
- *   main → worker:  { jobId: number, laws: WorldLaws, seed: number }
- *   worker → main:  { jobId: number, scores: WorldScores, avgTickMs: number, cpuFactor: number }
+ *   main → worker:  { jobId, laws, seed, evalSteps?, scoreWeights? }
+ *   worker → main:  { jobId, scores, avgTickMs, cpuFactor }
  *
  * Workers are kept alive between jobs — parentPort.on('message') loop.
  * The worker inherits tsx ESM hooks from the parent process (tsx v4).
@@ -14,25 +14,37 @@ import { World, type WorldHistory } from '../src/engine/world.ts';
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
 import type { WorldLaws } from '../src/engine/world-laws.ts';
 
-const EVAL_STEPS       = 800;
-const GRID_SIZE        = 64;
-const INITIAL_ENTITIES = 45;
-const CPU_TARGET_MS    = 0.8;
-const CPU_PENALTY_W    = 0.6;
+const DEFAULT_EVAL_STEPS    = 1600;
+const GRID_SIZE             = 64;
+const INITIAL_ENTITIES      = 45;
+const CPU_TARGET_MS         = 0.8;
+const CPU_PENALTY_W         = 0.6;
 
-const SCORE_WEIGHTS = {
+const DEFAULT_SCORE_WEIGHTS = {
   persistence:      1.0,
-  diversity:        1.5,
+  diversity:        1.0,
   complexityGrowth: 1.5,
-  communication:    2.5,
+  communication:    2.0,
   envStructure:     1.0,
   adaptability:     1.8,
+  speciation:       1.5,
 };
 
-parentPort!.on('message', ({ jobId, laws, seed }: { jobId: number; laws: WorldLaws; seed: number }) => {
+interface JobMessage {
+  jobId: number;
+  laws: WorldLaws;
+  seed: number;
+  evalSteps?: number;
+  scoreWeights?: Record<string, number>;
+}
+
+parentPort!.on('message', ({ jobId, laws, seed, evalSteps, scoreWeights }: JobMessage) => {
+  const steps = evalSteps ?? DEFAULT_EVAL_STEPS;
+  const weights = scoreWeights ?? DEFAULT_SCORE_WEIGHTS;
+
   const world = new World(
     laws,
-    { gridSize: GRID_SIZE, steps: EVAL_STEPS, initialEntities: INITIAL_ENTITIES },
+    { gridSize: GRID_SIZE, steps: steps, initialEntities: INITIAL_ENTITIES },
     seed,
   );
 
@@ -40,14 +52,14 @@ parentPort!.on('message', ({ jobId, laws, seed }: { jobId: number; laws: WorldLa
   let peakPop   = 0;
   const snapshots = [];
 
-  for (let t = 0; t < EVAL_STEPS; t++) {
+  for (let t = 0; t < steps; t++) {
     const snap = world.step();
     snapshots.push(snap);
     if (snap.population > peakPop) peakPop = snap.population;
   }
 
   const wallMs    = Date.now() - t0;
-  const avgTickMs = wallMs / EVAL_STEPS;
+  const avgTickMs = wallMs / steps;
 
   const history: WorldHistory = {
     snapshots,
@@ -57,9 +69,9 @@ parentPort!.on('message', ({ jobId, laws, seed }: { jobId: number; laws: WorldLa
     postDisasterRecoveries: 0,
   };
 
-  const scores = scoreWorld(history, laws, SCORE_WEIGHTS) as WorldScores;
+  const scores = scoreWorld(history, laws, weights) as WorldScores;
 
-  // CPU efficiency penalty — same formula as the old inline version
+  // CPU efficiency penalty
   const overload  = Math.max(0, avgTickMs / CPU_TARGET_MS - 1);
   const cpuFactor = 1 / (1 + overload * CPU_PENALTY_W);
   if (cpuFactor < 0.99) scores.total *= cpuFactor;

@@ -61,7 +61,7 @@ export interface ServerMeta {
   population: number;
   scores: {
     persistence: number; diversity: number; complexityGrowth: number;
-    communication: number; envStructure: number; adaptability: number; total: number;
+    communication: number; envStructure: number; adaptability: number; speciation: number; total: number;
   } | null;
   bestScore: number;
   generations: Array<{ gen: number; best: number; avg: number }>;

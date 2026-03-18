@@ -2,6 +2,12 @@
  * Scoring — evaluate how interesting a world's simulation was.
  * No hardcoded intelligence detectors. Uses information-theoretic
  * and statistical metrics.
+ *
+ * Anti-gaming measures:
+ * - Diversity is discounted by mutation chaos factor (high mutRate×mutStrength = cheap diversity)
+ * - Communication uses lagged correlation (signal→future births, not same-tick coincidence)
+ * - ComplexityGrowth requires sustained monotonic increase across quarters
+ * - Speciation rewards genome clustering (real species) over uniform random spread
  */
 
 import type { WorldHistory, WorldSnapshot } from './world';
@@ -14,6 +20,7 @@ export interface WorldScores {
   communication: number;
   envStructure: number;
   adaptability: number;
+  speciation: number;
   total: number;
 }
 
@@ -24,15 +31,20 @@ export function scoreWorld(
 ): WorldScores {
   const snaps = history.snapshots;
   if (snaps.length === 0) {
-    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, total: 0 };
+    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, total: 0 };
   }
 
+  // Mutation chaos factor: high mutRate × mutStrength = cheap diversity → discount
+  // starterLaws (0.06, 0.06) → 0.96x; degenerate (0.477, 0.3) → 0.41x
+  const chaosFactor = 1 / (1 + laws.mutationRate * laws.mutationStrength * 10);
+
   const persistence = scorePersistence(snaps);
-  const diversity = scoreDiversity(snaps);
-  const complexityGrowth = scoreComplexityGrowth(snaps);
+  const diversity = scoreDiversity(snaps, chaosFactor);
+  const complexityGrowth = scoreComplexityGrowth(snaps, chaosFactor);
   const communication = scoreCommunication(snaps);
   const envStructure = scoreEnvStructure(snaps);
   const adaptability = scoreAdaptability(history);
+  const speciation = scoreSpeciation(snaps);
 
   const total =
     (weights.persistence ?? 1) * persistence +
@@ -40,14 +52,13 @@ export function scoreWorld(
     (weights.complexityGrowth ?? 1) * complexityGrowth +
     (weights.communication ?? 1) * communication +
     (weights.envStructure ?? 1) * envStructure +
-    (weights.adaptability ?? 1) * adaptability;
+    (weights.adaptability ?? 1) * adaptability +
+    (weights.speciation ?? 0) * speciation;
 
-  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, total };
+  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, total };
 }
 
 function scorePersistence(snaps: WorldSnapshot[]): number {
-  // Fraction of ticks with population > 0, with penalty for
-  // instant extinction and stagnant immortality.
   let aliveTicks = 0;
   let totalVariation = 0;
   for (let i = 0; i < snaps.length; i++) {
@@ -55,13 +66,11 @@ function scorePersistence(snaps: WorldSnapshot[]): number {
     if (i > 0) totalVariation += Math.abs(snaps[i].population - snaps[i - 1].population);
   }
   const survivalRate = aliveTicks / snaps.length;
-  // Reward some population dynamics (not flat)
   const dynamism = Math.min(1, totalVariation / (snaps.length * 2));
   return survivalRate * 0.7 + dynamism * 0.3;
 }
 
-function scoreDiversity(snaps: WorldSnapshot[]): number {
-  // Average genome diversity over time
+function scoreDiversity(snaps: WorldSnapshot[], chaosFactor: number): number {
   let sum = 0;
   let count = 0;
   for (const s of snaps) {
@@ -71,36 +80,44 @@ function scoreDiversity(snaps: WorldSnapshot[]): number {
     }
   }
   if (count === 0) return 0;
-  const mean = sum / count;
-  // Normalize: max possible diversity in [0,1]^16 genome is sqrt(16)=4
-  return Math.min(1, mean / 2.0);
+  const m = sum / count;
+  // Normalize and apply chaos discount — random drift diversity is cheap
+  return Math.min(1, m / 2.0) * chaosFactor;
 }
 
-function scoreComplexityGrowth(snaps: WorldSnapshot[]): number {
-  // Measure if diversity is increasing over time (positive slope).
-  if (snaps.length < 20) return 0;
+function scoreComplexityGrowth(snaps: WorldSnapshot[], chaosFactor: number): number {
+  // Sustained growth across 4 quarters — reward monotonic increase, not just first-vs-last
+  if (snaps.length < 40) return 0;
 
-  const quarter = Math.floor(snaps.length / 4);
-  const firstQuarter = snaps.slice(0, quarter);
-  const lastQuarter = snaps.slice(-quarter);
+  const q = Math.floor(snaps.length / 4);
+  const quarters = [
+    snaps.slice(0, q),
+    snaps.slice(q, q * 2),
+    snaps.slice(q * 2, q * 3),
+    snaps.slice(q * 3),
+  ];
+  const qDiv = quarters.map(qs => mean(qs.map(s => s.diversity)));
+  const qPop = quarters.map(qs => mean(qs.map(s => s.population)));
 
-  const earlyDiv = mean(firstQuarter.map(s => s.diversity));
-  const lateDiv = mean(lastQuarter.map(s => s.diversity));
+  // Count consecutive quarters with diversity growth, weighted by magnitude
+  let growthScore = 0;
+  for (let i = 1; i < 4; i++) {
+    if (qDiv[i] > qDiv[i - 1]) {
+      growthScore += Math.min(0.5, (qDiv[i] - qDiv[i - 1]) / (qDiv[i - 1] + 0.01));
+    }
+  }
+  growthScore = Math.min(1, growthScore / 1.0); // 3 consecutive growths → ~1.0
 
-  // Also look at population complexity
-  const earlyPop = mean(firstQuarter.map(s => s.population));
-  const latePop = mean(lastQuarter.map(s => s.population));
+  // Population stability — late pop should be sustainable
+  const popStability = qPop[3] > 0 ? Math.min(1, qPop[3] / (qPop[0] + 1)) : 0;
 
-  const divGrowth = lateDiv > earlyDiv ? Math.min(1, (lateDiv - earlyDiv) / (earlyDiv + 0.01)) : 0;
-  const popStability = latePop > 0 ? Math.min(1, latePop / (earlyPop + 1)) : 0;
-
-  return divGrowth * 0.6 + popStability * 0.4;
+  return (growthScore * 0.6 + popStability * 0.4) * chaosFactor;
 }
 
 function scoreCommunication(snaps: WorldSnapshot[]): number {
-  // Measure correlation between signal activity and births/cooperation.
-  // If signals correlate with population dynamics, communication is meaningful.
-  if (snaps.length < 10) return 0;
+  // Lagged correlation: signals at tick T should predict births at T+lag.
+  // Test lags 5-15 and take the best. This prevents gaming via coincidental same-tick correlation.
+  if (snaps.length < 30) return 0;
 
   const signalArr = snaps.map(s => s.signalActivity);
   const birthArr = snaps.map(s => s.births);
@@ -109,29 +126,28 @@ function scoreCommunication(snaps: WorldSnapshot[]): number {
   const maxSignal = Math.max(...signalArr) || 1;
   const meanSignal = mean(signalArr) / maxSignal;
 
-  // Signal-birth correlation (simplified)
-  const corr = correlation(signalArr, birthArr);
+  // Find best lagged correlation across lag=[5..15]
+  let bestCorr = 0;
+  for (let lag = 5; lag <= 15; lag++) {
+    if (signalArr.length <= lag + 3) continue;
+    const sigSlice = signalArr.slice(0, signalArr.length - lag);
+    const birthSlice = birthArr.slice(lag);
+    const c = Math.abs(correlation(sigSlice, birthSlice));
+    if (c > bestCorr) bestCorr = c;
+  }
 
-  // Both signal usage and correlation matter
-  return Math.min(1, meanSignal * 0.4 + Math.abs(corr) * 0.6);
+  return Math.min(1, meanSignal * 0.3 + bestCorr * 0.7);
 }
 
 function scoreEnvStructure(snaps: WorldSnapshot[]): number {
-  // Measure if entities form spatial structures.
-  // Proxy: resource coverage variation over time (entities depleting/managing resources).
   if (snaps.length < 10) return 0;
-
   const coverage = snaps.map(s => s.resourceCoverage);
   const variance = sampleVariance(coverage);
-
-  // High variance = entities significantly impact environment
   return Math.min(1, variance * 20);
 }
 
 function scoreAdaptability(history: WorldHistory): number {
-  // Recovery after disasters
   if (history.disasterCount === 0) {
-    // No disasters: measure general resilience from population fluctuations
     const snaps = history.snapshots;
     if (snaps.length < 50) return 0.5;
 
@@ -155,6 +171,25 @@ function scoreAdaptability(history: WorldHistory): number {
   return history.postDisasterRecoveries / Math.max(1, history.disasterCount);
 }
 
+function scoreSpeciation(snaps: WorldSnapshot[]): number {
+  // Reward genome clustering: high variance of pairwise distances = distinct species.
+  // Random drift produces uniform distance distributions (low variance).
+  // Real speciation produces bimodal/multimodal distributions (high variance).
+  let sum = 0;
+  let count = 0;
+  for (const s of snaps) {
+    if (s.population >= 4) {
+      sum += s.diversityVariance;
+      count++;
+    }
+  }
+  if (count === 0) return 0;
+  const meanVar = sum / count;
+  // Normalize: variance of normalized distances typically 0–2.
+  // Score 0.5 → full credit (strong clustering).
+  return Math.min(1, meanVar / 0.5);
+}
+
 // --- Utilities ---
 
 function mean(arr: number[]): number {
@@ -173,7 +208,7 @@ function sampleVariance(arr: number[]): number {
 }
 
 function correlation(a: number[], b: number[]): number {
-  const n = a.length;
+  const n = Math.min(a.length, b.length);
   if (n < 3) return 0;
   const ma = mean(a);
   const mb = mean(b);

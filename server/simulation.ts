@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 
 interface SavedState {
   version: number;
@@ -42,20 +42,24 @@ interface SavedState {
 
 const EVAL_CONFIG = {
   gridSize:            64,
-  worldSteps:         800,
+  worldSteps:        1600,   // doubled: more entity generations per eval
   initialEntities:     45,
-  worldsPerGeneration: 10,
-  topK:                 2,
+  worldsPerGeneration: 12,   // slightly more candidates for exploration
+  topK:                 3,   // 3 survivors for more genetic diversity
   mutationStrength:  0.08,
   scoreWeights: {
     persistence:      1.0,
-    diversity:        1.5,
-    complexityGrowth: 1.5,
-    communication:    2.5,
+    diversity:        1.0,   // reduced: chaos-discounted internally
+    complexityGrowth: 1.5,   // chaos-discounted internally
+    communication:    2.0,   // reduced: lagged correlation is harder
     envStructure:     1.0,
     adaptability:     1.8,
+    speciation:       1.5,   // NEW: rewards genome clustering (real species)
   },
-  stagnationThreshold:      30,
+  // Escalating stagnation tiers
+  stagnationMild:           30,   // 25% random, 2× mutation
+  stagnationAggressive:    100,   // 50% random, 4× mutation
+  stagnationReset:         300,   // full population reset from scratch
   stagnationRandomFraction: 0.25,
   minImprovementRatio:      0.01,
   cpuTargetMs:              0.8,
@@ -353,7 +357,11 @@ export class SimulationController {
     // Dispatch all worlds in parallel — each resolves when its worker is done
     await Promise.all(
       this.population.map(async (laws, i) => {
-        const result = await this.workerPool.submit(i, { laws, seed: seeds[i] });
+        const result = await this.workerPool.submit(i, {
+          laws, seed: seeds[i],
+          evalSteps: EVAL_CONFIG.worldSteps,
+          scoreWeights: EVAL_CONFIG.scoreWeights,
+        });
         this.completedWorldsThisGen++;
 
         if (result.cpuFactor < 0.8) {
@@ -394,39 +402,96 @@ export class SimulationController {
     this.log(`Gen ${this.generation} · best ${best.toFixed(3)} · avg ${avg.toFixed(3)} · ${this.evalSpeedSample} t/s`);
 
     const gensSinceImproved = this.generation - this.lastImprovementGen;
-    const stagnating        = gensSinceImproved >= EVAL_CONFIG.stagnationThreshold;
-    if (stagnating) this.log(`Stagnant for ${gensSinceImproved} gen — injecting diversity`);
+    const N = EVAL_CONFIG.worldsPerGeneration;
 
-    const survivors   = sorted.slice(0, EVAL_CONFIG.topK);
-    const randomSlots = stagnating
-      ? Math.ceil(EVAL_CONFIG.worldsPerGeneration * EVAL_CONFIG.stagnationRandomFraction)
-      : 0;
-    const childSlots  = EVAL_CONFIG.worldsPerGeneration - randomSlots;
-    const childrenPer = Math.floor(childSlots / EVAL_CONFIG.topK);
+    // ── Escalating stagnation tiers ──────────────────────────────────────────
+    if (gensSinceImproved >= EVAL_CONFIG.stagnationReset) {
+      // TIER 3: Full population reset — local optimum is exhausted
+      this.log(`Stagnant ${gensSinceImproved} gen — HARD RESET (keeping alltime best)`);
+      this.population = [];
+      if (this.bestLaws) {
+        this.population.push(this.bestLaws);
+        this.population.push(mutateLaws(this.bestLaws, this.evalRng, 0.20));
+        this.population.push(mutateLaws(this.bestLaws, this.evalRng, 0.30));
+      }
+      // Add starter variants for known-good seeds
+      this.population.push(starterLaws());
+      this.population.push(mutateLaws(starterLaws(), this.evalRng, 0.15));
+      // Fill rest with fully random exploration
+      while (this.population.length < N) {
+        this.population.push(randomLaws(this.evalRng));
+      }
+      this.lastImprovementGen = this.generation; // reset stagnation counter
+    } else if (gensSinceImproved >= EVAL_CONFIG.stagnationAggressive) {
+      // TIER 2: Aggressive — 50% random, 4× mutation on survivors
+      this.log(`Stagnant ${gensSinceImproved} gen — aggressive diversity injection`);
+      const survivors = sorted.slice(0, EVAL_CONFIG.topK);
+      const randomSlots = Math.ceil(N * 0.5);
+      this.population = [];
+      for (const s of survivors) {
+        this.population.push(s.laws);
+        this.population.push(mutateLaws(s.laws, this.evalRng, EVAL_CONFIG.mutationStrength * 4));
+      }
+      if (survivors.length >= 2) {
+        this.population.push(crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng));
+      }
+      while (this.population.length < N - randomSlots) {
+        this.population.push(mutateLaws(survivors[0].laws, this.evalRng, EVAL_CONFIG.mutationStrength * 3));
+      }
+      for (let r = 0; r < randomSlots && this.population.length < N; r++) {
+        this.population.push(randomLaws(this.evalRng));
+      }
+    } else if (gensSinceImproved >= EVAL_CONFIG.stagnationMild) {
+      // TIER 1: Mild — 25% random, 2× mutation (original behavior)
+      this.log(`Stagnant ${gensSinceImproved} gen — mild diversity injection`);
+      const survivors = sorted.slice(0, EVAL_CONFIG.topK);
+      const randomSlots = Math.ceil(N * EVAL_CONFIG.stagnationRandomFraction);
+      this.population = [];
+      for (const s of survivors) {
+        this.population.push(s.laws);
+      }
+      // Crossovers
+      if (survivors.length >= 2) {
+        this.population.push(crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng));
+        this.population.push(mutateLaws(
+          crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng),
+          this.evalRng, EVAL_CONFIG.mutationStrength,
+        ));
+      }
+      // Mutated children
+      while (this.population.length < N - randomSlots) {
+        const parent = survivors[this.population.length % survivors.length].laws;
+        this.population.push(mutateLaws(parent, this.evalRng, EVAL_CONFIG.mutationStrength * 2));
+      }
+      for (let r = 0; r < randomSlots && this.population.length < N; r++) {
+        this.population.push(randomLaws(this.evalRng));
+      }
+    } else {
+      // Normal generation — no stagnation
+      const survivors = sorted.slice(0, EVAL_CONFIG.topK);
+      const childSlots = N - EVAL_CONFIG.topK;
+      const childrenPer = Math.floor(childSlots / EVAL_CONFIG.topK);
 
-    this.population = [];
-    for (const s of survivors) {
-      this.population.push(s.laws); // elitism
-      for (let c = 1; c < childrenPer; c++) {
-        const strength = stagnating ? EVAL_CONFIG.mutationStrength * 2 : EVAL_CONFIG.mutationStrength;
-        this.population.push(mutateLaws(s.laws, this.evalRng, strength));
+      this.population = [];
+      for (const s of survivors) {
+        this.population.push(s.laws); // elitism
+        for (let c = 0; c < childrenPer; c++) {
+          this.population.push(mutateLaws(s.laws, this.evalRng, EVAL_CONFIG.mutationStrength));
+        }
+      }
+      if (survivors.length >= 2) {
+        this.population.push(crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng));
+        this.population.push(mutateLaws(
+          crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng),
+          this.evalRng, EVAL_CONFIG.mutationStrength,
+        ));
+      }
+      while (this.population.length < N) {
+        this.population.push(mutateLaws(survivors[0].laws, this.evalRng, EVAL_CONFIG.mutationStrength * 1.5));
       }
     }
-    if (survivors.length >= 2) {
-      this.population.push(crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng));
-      this.population.push(mutateLaws(
-        crossoverLaws(survivors[0].laws, survivors[1].laws, this.evalRng),
-        this.evalRng, EVAL_CONFIG.mutationStrength,
-      ));
-    }
-    for (let r = 0; r < randomSlots; r++) {
-      this.population.push(randomLaws(this.evalRng));
-    }
-    while (this.population.length < EVAL_CONFIG.worldsPerGeneration) {
-      this.population.push(mutateLaws(survivors[0].laws, this.evalRng, EVAL_CONFIG.mutationStrength * 1.5));
-    }
-    this.population = this.population.slice(0, EVAL_CONFIG.worldsPerGeneration);
 
+    this.population = this.population.slice(0, N);
     this.generation++;
     this.saveState();
   }
