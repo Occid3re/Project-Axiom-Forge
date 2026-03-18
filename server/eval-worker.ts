@@ -21,14 +21,16 @@ const CPU_TARGET_MS         = 0.8;
 const CPU_PENALTY_W         = 0.6;
 
 const DEFAULT_SCORE_WEIGHTS = {
-  persistence:      1.0,
-  diversity:        1.0,
-  complexityGrowth: 1.5,
-  communication:    2.0,
-  envStructure:     1.0,
-  adaptability:     1.8,
-  speciation:       1.5,
-  interactions:     1.5,
+  persistence:        0.5,
+  diversity:          1.5,
+  complexityGrowth:   1.0,
+  communication:      2.0,
+  envStructure:       0.5,
+  adaptability:       1.0,
+  speciation:         3.0,
+  interactions:       3.5,
+  spatialStructure:   1.5,
+  populationDynamics: 1.5,
 };
 
 interface JobMessage {

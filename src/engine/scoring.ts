@@ -22,6 +22,8 @@ export interface WorldScores {
   adaptability: number;
   speciation: number;
   interactions: number;
+  spatialStructure: number;
+  populationDynamics: number;
   total: number;
 }
 
@@ -32,7 +34,7 @@ export function scoreWorld(
 ): WorldScores {
   const snaps = history.snapshots;
   if (snaps.length === 0) {
-    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, interactions: 0, total: 0 };
+    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, interactions: 0, spatialStructure: 0, populationDynamics: 0, total: 0 };
   }
 
   // Mutation chaos factor: high mutRate × mutStrength = cheap diversity → discount
@@ -47,6 +49,8 @@ export function scoreWorld(
   const adaptability = scoreAdaptability(history);
   const speciation = scoreSpeciation(snaps);
   const interactions = scoreInteractions(snaps);
+  const spatialStructure = scoreSpatialStructure(snaps);
+  const populationDynamics = scorePopulationDynamics(snaps);
 
   const total =
     (weights.persistence ?? 1) * persistence +
@@ -56,9 +60,11 @@ export function scoreWorld(
     (weights.envStructure ?? 1) * envStructure +
     (weights.adaptability ?? 1) * adaptability +
     (weights.speciation ?? 0) * speciation +
-    (weights.interactions ?? 0) * interactions;
+    (weights.interactions ?? 0) * interactions +
+    (weights.spatialStructure ?? 0) * spatialStructure +
+    (weights.populationDynamics ?? 0) * populationDynamics;
 
-  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, interactions, total };
+  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, interactions, spatialStructure, populationDynamics, total };
 }
 
 function scorePersistence(snaps: WorldSnapshot[]): number {
@@ -216,6 +222,78 @@ function scoreInteractions(snaps: WorldSnapshot[]): number {
 
   // Both present = rich ecology (geometric mean rewards balance)
   return Math.sqrt(attackScore * signalScore);
+}
+
+function scoreSpatialStructure(snaps: WorldSnapshot[]): number {
+  // Reward worlds where population isn't uniformly distributed.
+  // Use variance of births/deaths across time as proxy for spatial hotspots.
+  // A world with localized battles (high birth/death variance) is more
+  // spatially interesting than a uniform monoculture (constant births/deaths).
+  if (snaps.length < 40) return 0;
+
+  const birthRates = snaps.filter(s => s.population > 2).map(s => s.births / s.population);
+  const deathRates = snaps.filter(s => s.population > 2).map(s => s.deaths / s.population);
+  if (birthRates.length < 20) return 0;
+
+  const birthVar = sampleVariance(birthRates);
+  const deathVar = sampleVariance(deathRates);
+
+  // Also reward poison coverage variation (active dead zones forming and clearing)
+  const poisonCov = snaps.map(s => s.poisonCoverage);
+  const poisonVar = sampleVariance(poisonCov);
+  const poisonPresent = mean(poisonCov) > 0.01 ? 0.3 : 0;
+
+  // Penalize very high population (monoculture soup fills the screen)
+  const meanPop = mean(snaps.map(s => s.population));
+  const overflowPenalty = meanPop > 2000 ? Math.min(0.5, (meanPop - 2000) / 4000) : 0;
+
+  const rawScore = Math.min(1, (birthVar + deathVar) * 30 + poisonVar * 10 + poisonPresent);
+  return Math.max(0, rawScore - overflowPenalty);
+}
+
+function scorePopulationDynamics(snaps: WorldSnapshot[]): number {
+  // Reward oscillating populations (predator-prey cycles, boom-bust).
+  // Penalize flat population lines (boring monoculture equilibrium).
+  if (snaps.length < 60) return 0;
+
+  const pops = snaps.map(s => s.population);
+  const meanPop = mean(pops);
+  if (meanPop < 5) return 0;
+
+  // Count direction changes (peaks/troughs) — more = more dynamic
+  let directionChanges = 0;
+  for (let i = 2; i < pops.length; i++) {
+    const prev = pops[i - 1] - pops[i - 2];
+    const curr = pops[i] - pops[i - 1];
+    if ((prev > 0 && curr < 0) || (prev < 0 && curr > 0)) directionChanges++;
+  }
+  // Smooth out noise: count significant changes (>2% of mean population)
+  let significantChanges = 0;
+  const threshold = meanPop * 0.03;
+  let lastPeak = pops[0];
+  let rising = true;
+  for (let i = 1; i < pops.length; i++) {
+    if (rising && pops[i] < lastPeak - threshold) {
+      significantChanges++;
+      rising = false;
+      lastPeak = pops[i];
+    } else if (!rising && pops[i] > lastPeak + threshold) {
+      significantChanges++;
+      rising = true;
+      lastPeak = pops[i];
+    }
+    if (rising && pops[i] > lastPeak) lastPeak = pops[i];
+    if (!rising && pops[i] < lastPeak) lastPeak = pops[i];
+  }
+
+  // Coefficient of variation — high = dynamic, low = flat
+  const cv = Math.sqrt(sampleVariance(pops)) / (meanPop + 1);
+
+  // Combine: significant oscillations + variability
+  const oscillationScore = Math.min(1, significantChanges / 15);
+  const cvScore = Math.min(1, cv * 5);
+
+  return oscillationScore * 0.6 + cvScore * 0.4;
 }
 
 // --- Utilities ---

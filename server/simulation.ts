@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 6;
+const STATE_VERSION = 7;
 
 interface SavedState {
   version: number;
@@ -48,14 +48,16 @@ const EVAL_CONFIG = {
   topK:                 3,   // 3 survivors for more genetic diversity
   mutationStrength:  0.08,
   scoreWeights: {
-    persistence:      1.0,
-    diversity:        1.0,   // reduced: chaos-discounted internally
-    complexityGrowth: 1.5,   // chaos-discounted internally
-    communication:    2.0,   // reduced: lagged correlation is harder
-    envStructure:     1.0,
-    adaptability:     1.8,
-    speciation:       1.5,   // rewards genome clustering (real species)
-    interactions:     1.5,   // rewards predator-prey arms races (attacks + signals + survival)
+    persistence:      0.5,   // halved: survival is necessary but shouldn't dominate
+    diversity:        1.5,   // increased: genome divergence is key to interesting worlds
+    complexityGrowth: 1.0,   // slight decrease
+    communication:    2.0,   // keep: lagged correlation is already hard
+    envStructure:     0.5,   // halved: too easy to max out
+    adaptability:     1.0,   // reduced: stop rewarding static populations
+    speciation:       3.0,   // doubled: we WANT visible species
+    interactions:     3.5,   // big increase: predator-prey is what makes watching fun
+    spatialStructure: 1.5,   // NEW: reward clustering/territories, penalize uniform soup
+    populationDynamics: 1.5, // NEW: reward oscillation, penalize flat population lines
   },
   // Escalating stagnation tiers
   stagnationMild:           30,   // 25% random, 2× mutation
