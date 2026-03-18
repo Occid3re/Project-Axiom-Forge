@@ -364,7 +364,7 @@ export class World {
       // Directional perception scan (radius-2): accumulate resource, entity, glyph per quadrant.
       // Quadrant assignment uses dominant axis: |dx|>=|dy| → E/W, else → S/N.
       // Also used for overcrowding / cooperation since it covers the same neighbourhood.
-      const crowdThresh = laws.crowdingThreshold ?? 3;
+      const crowdThresh = Math.max(3, laws.crowdingThreshold ?? 3); // min 3 — 1 killed social behavior
       const coopBonus   = laws.cooperationBonus ?? 0;
       const cx = entities.x[i], cy = entities.y[i];
       const { dirRes, dirEnt, dirGlyph, dirCount } = this;

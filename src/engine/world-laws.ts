@@ -127,7 +127,7 @@ const INT_RANGES: Record<string, { min: number; max: number }> = {
   moveSpeed: { min: 1, max: 3 },
   attackRange: { min: 1, max: 3 },
   spawnDistance: { min: 1, max: 4 },
-  crowdingThreshold: { min: 1, max: 6 },
+  crowdingThreshold: { min: 3, max: 10 },
 };
 
 // --- Seeded PRNG (xoshiro128**) for deterministic runs ---

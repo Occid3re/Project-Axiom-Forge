@@ -127,24 +127,27 @@ function scoreComplexityGrowth(snaps: WorldSnapshot[], chaosFactor: number): num
 }
 
 function scoreCommunication(snaps: WorldSnapshot[]): number {
+  // Communication via stigmergic glyphs (DEPOSIT+ABSORB): entities lay chemical trails
+  // that others can follow. If glyph activity correlates with future births, communication
+  // is driving reproduction — a real information channel.
   if (snaps.length < 30) return 0;
 
-  const signalArr = snaps.map(s => s.signalActivity);
+  const glyphArr = snaps.map(s => s.deposits + s.absorbs);
   const birthArr = snaps.map(s => s.births);
 
-  const maxSignal = Math.max(...signalArr) || 1;
-  const meanSignal = mean(signalArr) / maxSignal;
+  const maxGlyph = Math.max(...glyphArr) || 1;
+  const meanGlyph = mean(glyphArr) / maxGlyph;
 
   let bestCorr = 0;
   for (let lag = 5; lag <= 15; lag++) {
-    if (signalArr.length <= lag + 3) continue;
-    const sigSlice = signalArr.slice(0, signalArr.length - lag);
-    const birthSlice = birthArr.slice(lag);
-    const c = Math.abs(correlation(sigSlice, birthSlice));
+    if (glyphArr.length <= lag + 3) continue;
+    const gSlice = glyphArr.slice(0, glyphArr.length - lag);
+    const bSlice = birthArr.slice(lag);
+    const c = Math.abs(correlation(gSlice, bSlice));
     if (c > bestCorr) bestCorr = c;
   }
 
-  return Math.min(1, meanSignal * 0.3 + bestCorr * 0.7);
+  return Math.min(1, meanGlyph * 0.3 + bestCorr * 0.7);
 }
 
 function scoreEnvStructure(snaps: WorldSnapshot[]): number {
@@ -194,20 +197,23 @@ function scoreSpeciation(snaps: WorldSnapshot[]): number {
 }
 
 function scoreInteractions(snaps: WorldSnapshot[]): number {
+  // Interactions = predation (attacks) coexisting with glyph-based communication.
+  // Glyph activity replaces signal-based communication as the "social" component —
+  // entities can perceive glyphs directionally but cannot perceive chemical signals.
   if (snaps.length < 20) return 0;
 
   const popSnaps = snaps.filter(s => s.population > 2);
   if (popSnaps.length < 10) return 0;
 
   const attackRate = mean(popSnaps.map(s => s.attacks / s.population));
-  const signalRate = mean(popSnaps.map(s => s.signals / s.population));
+  const glyphRate  = mean(popSnaps.map(s => (s.deposits + s.absorbs) / s.population));
 
   const attackScore = attackRate > 0.01
     ? Math.min(1, attackRate * 5) * Math.min(1, 0.5 / (attackRate + 0.01))
     : 0;
-  const signalScore = Math.min(1, signalRate * 3);
+  const glyphScore = Math.min(1, glyphRate * 3);
 
-  return Math.sqrt(attackScore * signalScore);
+  return Math.sqrt(attackScore * glyphScore);
 }
 
 function scoreSpatialStructure(snaps: WorldSnapshot[]): number {

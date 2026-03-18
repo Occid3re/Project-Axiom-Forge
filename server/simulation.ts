@@ -42,8 +42,8 @@ interface SavedState {
 
 const EVAL_CONFIG = {
   gridSize:            64,
-  worldSteps:        2400,   // 180-weight NN needs more ticks for complex behaviours to manifest
-  initialEntities:     50,   // slightly denser: better resource cycling signal in eval
+  worldSteps:        3200,   // 270-weight NN + directional movement needs more ticks
+  initialEntities:     50,   // density = 50/(64²) ≈ 0.012, matches display
   worldsPerGeneration: 12,
   topK:                 3,
   mutationStrength:  0.08,
@@ -67,8 +67,8 @@ const EVAL_CONFIG = {
   stagnationReset:         150,   // full reset sooner — score plateau is deep
   stagnationRandomFraction: 0.25,
   minImprovementRatio:    0.005,  // count smaller improvements as real progress
-  cpuTargetMs:              2.0,  // 180-weight NN is ~2.5× heavier than old 72-weight
-  cpuPenaltyWeight:         0.3,  // softer penalty — don't kill interesting complex worlds
+  cpuTargetMs:              6.0,  // 270-weight NN + directional scan is expensive; don't penalize rich worlds
+  cpuPenaltyWeight:         0.05, // near-zero: complex worlds should NOT be penalized for being interesting
 };
 
 const DISPLAY_CONFIG = {
