@@ -15,12 +15,12 @@
 - Reduce field bandwidth further by downsampling field frames on the wire and expanding them client-side before render.
 - Add gzip for static assets in nginx.
 - Restore a working ESLint 9 setup with a flat config and clean `npm run lint`.
+- Reduce field bandwidth further with tile-delta field packets plus periodic keyframes.
 
 ## Next
 
-- Reduce field bandwidth further with tile-delta field packets and periodic keyframes instead of full downsampled refreshes.
-- Consider brotli in nginx in addition to gzip if the VPS package set supports it.
 - Revisit score and stage thresholds after the transport, kin-selection, and carrying-capacity changes to ensure the UI still reflects real emergence progress.
+- If brotli is still desired later, install an nginx build/module that includes brotli support on the VPS first.
 
 ## Review Backlog
 

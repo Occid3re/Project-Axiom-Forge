@@ -77,6 +77,8 @@ const DISPLAY_CONFIG = {
   minLifetimeTicks: 240,
   fieldFrameInterval: 6, // 30fps entities, 5fps field refresh
   fieldDownsample: 2,
+  fieldKeyframeInterval: 60, // full field refresh every ~2s for resync
+  fieldTileSize: 8,
 };
 
 // ── Worker pool ──────────────────────────────────────────────────────────────
@@ -132,6 +134,266 @@ class WorkerPool {
 // sigmoid-mapped to [0, 1]:
 //   aggression255: W2 ATTACK column (a=8)  → how strongly this network attacks
 //   species255:    W2 SIGNAL column (a=7) + W2 EAT column (a=5) → behaviour fingerprint
+
+const FIELD_PACKET_HEADER_BYTES = 32;
+const FIELD_PACKET_KIND_KEYFRAME = 0;
+const FIELD_PACKET_KIND_DELTA = 1;
+const FIELD_RESOURCE_DELTA_THRESHOLD = 3;
+const FIELD_SIGNAL_DELTA_THRESHOLD = 4;
+const FIELD_POISON_DELTA_THRESHOLD = 3;
+const FIELD_GLYPH_DELTA_THRESHOLD = 3;
+const FIELD_PLANE_RESOURCES = 1;
+const FIELD_PLANE_SIGNALS = 2;
+const FIELD_PLANE_POISON = 4;
+const FIELD_PLANE_GLYPHS = 8;
+
+interface PackedFieldState {
+  gridW: number;
+  gridH: number;
+  step: number;
+  outW: number;
+  outH: number;
+  tick: number;
+  resources: Uint8Array;
+  signals: Uint8Array;
+  poison: Uint8Array;
+  glyphs: Uint8Array;
+}
+
+interface FieldTile {
+  tileX: number;
+  tileY: number;
+  tileW: number;
+  tileH: number;
+  planeMask: number;
+}
+
+function samplePackedFieldState(world: World, tick: number): PackedFieldState {
+  const vs = world.getVisualState();
+  const { gridW: W, gridH: H, signalChannels } = vs;
+  const channels = Math.min(signalChannels, 3);
+  const step = DISPLAY_CONFIG.fieldDownsample;
+  const outW = Math.max(1, Math.floor(W / step));
+  const outH = Math.max(1, Math.floor(H / step));
+  const outCells = outW * outH;
+  const resources = new Uint8Array(outCells);
+  const signals = new Uint8Array(outCells * 3);
+  const poison = new Uint8Array(outCells);
+  const glyphs = new Uint8Array(outCells);
+
+  let offset = 0;
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      let sum = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = oy * step + dy;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = ox * step + dx;
+          sum += vs.resources[sy * W + sx];
+        }
+      }
+      resources[offset++] = Math.min(255, ((sum / (step * step)) * 255) | 0);
+    }
+  }
+
+  offset = 0;
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      for (let c = 0; c < 3; c++) {
+        if (c >= channels) {
+          signals[offset++] = 0;
+          continue;
+        }
+        let sum = 0;
+        for (let dy = 0; dy < step; dy++) {
+          const sy = oy * step + dy;
+          for (let dx = 0; dx < step; dx++) {
+            const sx = ox * step + dx;
+            sum += vs.signals[(sy * W + sx) * signalChannels + c];
+          }
+        }
+        signals[offset++] = Math.min(255, ((sum / (step * step)) * 255) | 0);
+      }
+    }
+  }
+
+  offset = 0;
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      let sum = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = oy * step + dy;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = ox * step + dx;
+          sum += vs.poison[sy * W + sx];
+        }
+      }
+      poison[offset++] = Math.min(255, ((sum / (step * step)) * 255) | 0);
+    }
+  }
+
+  offset = 0;
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      let sum = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = oy * step + dy;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = ox * step + dx;
+          let mag = 0;
+          const base = (sy * W + sx) * GLYPH_CHANNELS;
+          for (let c = 0; c < GLYPH_CHANNELS; c++) {
+            mag += vs.glyphs[base + c] * vs.glyphs[base + c];
+          }
+          sum += Math.sqrt(mag);
+        }
+      }
+      glyphs[offset++] = Math.min(255, ((sum / (step * step)) * 128) | 0);
+    }
+  }
+
+  return { gridW: W, gridH: H, step, outW, outH, tick, resources, signals, poison, glyphs };
+}
+
+function packFieldKeyframe(state: PackedFieldState): ArrayBuffer {
+  const cells = state.outW * state.outH;
+  const totalBytes = FIELD_PACKET_HEADER_BYTES + cells + cells * 3 + cells + cells;
+  const buf = new ArrayBuffer(totalBytes);
+  const view = new DataView(buf);
+  const u8 = new Uint8Array(buf);
+
+  view.setUint32(0, 0x41584646, true);
+  view.setUint32(4, state.gridW, true);
+  view.setUint32(8, state.gridH, true);
+  view.setUint32(12, state.step, true);
+  view.setUint32(16, state.tick, true);
+  view.setUint32(20, FIELD_PACKET_KIND_KEYFRAME, true);
+  view.setUint32(24, 0, true);
+  view.setUint32(28, 0, true);
+
+  let offset = FIELD_PACKET_HEADER_BYTES;
+  u8.set(state.resources, offset); offset += state.resources.length;
+  u8.set(state.signals, offset); offset += state.signals.length;
+  u8.set(state.poison, offset); offset += state.poison.length;
+  u8.set(state.glyphs, offset);
+  return buf;
+}
+
+function computeTilePlaneMask(current: PackedFieldState, previous: PackedFieldState, tile: FieldTile): number {
+  const tileSize = DISPLAY_CONFIG.fieldTileSize;
+  const startX = tile.tileX * tileSize;
+  const startY = tile.tileY * tileSize;
+  let planeMask = 0;
+  for (let dy = 0; dy < tile.tileH; dy++) {
+    const row = (startY + dy) * current.outW + startX;
+    for (let dx = 0; dx < tile.tileW; dx++) {
+      const idx = row + dx;
+      if (Math.abs(current.resources[idx] - previous.resources[idx]) >= FIELD_RESOURCE_DELTA_THRESHOLD) planeMask |= FIELD_PLANE_RESOURCES;
+      if (Math.abs(current.poison[idx] - previous.poison[idx]) >= FIELD_POISON_DELTA_THRESHOLD) planeMask |= FIELD_PLANE_POISON;
+      if (Math.abs(current.glyphs[idx] - previous.glyphs[idx]) >= FIELD_GLYPH_DELTA_THRESHOLD) planeMask |= FIELD_PLANE_GLYPHS;
+      const sig = idx * 3;
+      if (
+        Math.abs(current.signals[sig] - previous.signals[sig]) >= FIELD_SIGNAL_DELTA_THRESHOLD
+        || Math.abs(current.signals[sig + 1] - previous.signals[sig + 1]) >= FIELD_SIGNAL_DELTA_THRESHOLD
+        || Math.abs(current.signals[sig + 2] - previous.signals[sig + 2]) >= FIELD_SIGNAL_DELTA_THRESHOLD
+      ) {
+        planeMask |= FIELD_PLANE_SIGNALS;
+      }
+      if (planeMask === (FIELD_PLANE_RESOURCES | FIELD_PLANE_SIGNALS | FIELD_PLANE_POISON | FIELD_PLANE_GLYPHS)) {
+        return planeMask;
+      }
+    }
+  }
+  return planeMask;
+}
+
+function copyScalarTileToPacket(dest: Uint8Array, offset: number, plane: Uint8Array, outW: number, tile: FieldTile): number {
+  const tileSize = DISPLAY_CONFIG.fieldTileSize;
+  const startX = tile.tileX * tileSize;
+  const startY = tile.tileY * tileSize;
+  for (let dy = 0; dy < tile.tileH; dy++) {
+    const rowStart = (startY + dy) * outW + startX;
+    dest.set(plane.subarray(rowStart, rowStart + tile.tileW), offset);
+    offset += tile.tileW;
+  }
+  return offset;
+}
+
+function copySignalTileToPacket(dest: Uint8Array, offset: number, plane: Uint8Array, outW: number, tile: FieldTile): number {
+  const tileSize = DISPLAY_CONFIG.fieldTileSize;
+  const startX = tile.tileX * tileSize;
+  const startY = tile.tileY * tileSize;
+  for (let dy = 0; dy < tile.tileH; dy++) {
+    const rowStart = ((startY + dy) * outW + startX) * 3;
+    dest.set(plane.subarray(rowStart, rowStart + tile.tileW * 3), offset);
+    offset += tile.tileW * 3;
+  }
+  return offset;
+}
+
+function packFieldDelta(current: PackedFieldState, previous: PackedFieldState): ArrayBuffer | null {
+  if (
+    current.gridW !== previous.gridW
+    || current.gridH !== previous.gridH
+    || current.step !== previous.step
+    || current.outW !== previous.outW
+    || current.outH !== previous.outH
+  ) {
+    return null;
+  }
+
+  const tileSize = DISPLAY_CONFIG.fieldTileSize;
+  const tilesX = Math.ceil(current.outW / tileSize);
+  const tilesY = Math.ceil(current.outH / tileSize);
+  const changedTiles: FieldTile[] = [];
+
+  for (let tileY = 0; tileY < tilesY; tileY++) {
+    const tileH = Math.min(tileSize, current.outH - tileY * tileSize);
+    for (let tileX = 0; tileX < tilesX; tileX++) {
+      const tileW = Math.min(tileSize, current.outW - tileX * tileSize);
+      const planeMask = computeTilePlaneMask(current, previous, { tileX, tileY, tileW, tileH, planeMask: 0 });
+      if (planeMask !== 0) changedTiles.push({ tileX, tileY, tileW, tileH, planeMask });
+    }
+  }
+
+  if (changedTiles.length === 0) return null;
+
+  let totalBytes = FIELD_PACKET_HEADER_BYTES;
+  for (const tile of changedTiles) {
+    totalBytes += 5;
+    if (tile.planeMask & FIELD_PLANE_RESOURCES) totalBytes += tile.tileW * tile.tileH;
+    if (tile.planeMask & FIELD_PLANE_SIGNALS) totalBytes += tile.tileW * tile.tileH * 3;
+    if (tile.planeMask & FIELD_PLANE_POISON) totalBytes += tile.tileW * tile.tileH;
+    if (tile.planeMask & FIELD_PLANE_GLYPHS) totalBytes += tile.tileW * tile.tileH;
+  }
+
+  const buf = new ArrayBuffer(totalBytes);
+  const view = new DataView(buf);
+  const u8 = new Uint8Array(buf);
+
+  view.setUint32(0, 0x41584646, true);
+  view.setUint32(4, current.gridW, true);
+  view.setUint32(8, current.gridH, true);
+  view.setUint32(12, current.step, true);
+  view.setUint32(16, current.tick, true);
+  view.setUint32(20, FIELD_PACKET_KIND_DELTA, true);
+  view.setUint32(24, tileSize, true);
+  view.setUint32(28, changedTiles.length, true);
+
+  let offset = FIELD_PACKET_HEADER_BYTES;
+  for (const tile of changedTiles) {
+    view.setUint16(offset, tile.tileX, true);
+    view.setUint16(offset + 2, tile.tileY, true);
+    u8[offset + 4] = tile.planeMask;
+    offset += 5;
+    if (tile.planeMask & FIELD_PLANE_RESOURCES) offset = copyScalarTileToPacket(u8, offset, current.resources, current.outW, tile);
+    if (tile.planeMask & FIELD_PLANE_SIGNALS) offset = copySignalTileToPacket(u8, offset, current.signals, current.outW, tile);
+    if (tile.planeMask & FIELD_PLANE_POISON) offset = copyScalarTileToPacket(u8, offset, current.poison, current.outW, tile);
+    if (tile.planeMask & FIELD_PLANE_GLYPHS) offset = copyScalarTileToPacket(u8, offset, current.glyphs, current.outW, tile);
+  }
+
+  return buf;
+}
 
 export function packFieldFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
@@ -327,6 +589,8 @@ export class SimulationController {
   private displaySnapshots: WorldSnapshot[] = [];
   private displayScores:    WorldScores | null = null;
   private displaySeed       = 1;
+  private lastFieldState: PackedFieldState | null = null;
+  private lastFieldKeyframeTick = 0;
 
   // Shared
   bestScore = 0;
@@ -591,6 +855,44 @@ export class SimulationController {
     this.displayTick      = 0;
     this.displaySnapshots = [];
     this.displayScores    = null;
+    this.lastFieldState   = null;
+    this.lastFieldKeyframeTick = 0;
+  }
+
+  private packScheduledFields(world: World): ArrayBuffer | undefined {
+    const currentState = samplePackedFieldState(world, this.displayTick);
+    const keyframe = packFieldKeyframe(currentState);
+    const needsKeyframe = !this.lastFieldState
+      || this.displayTick === 1
+      || (this.displayTick - this.lastFieldKeyframeTick) >= DISPLAY_CONFIG.fieldKeyframeInterval;
+
+    if (needsKeyframe) {
+      this.lastFieldState = currentState;
+      this.lastFieldKeyframeTick = this.displayTick;
+      return keyframe;
+    }
+
+    const delta = packFieldDelta(currentState, this.lastFieldState);
+    if (!delta || delta.byteLength >= keyframe.byteLength) {
+      this.lastFieldState = currentState;
+      this.lastFieldKeyframeTick = this.displayTick;
+      return keyframe;
+    }
+
+    this.lastFieldState = currentState;
+    return delta;
+  }
+
+  getBootstrapFrames(): { entities: ArrayBuffer; fields: ArrayBuffer } | null {
+    if (!this.displayWorld) {
+      this.startDisplayWorld(this.bestLaws ?? starterLaws());
+    }
+    const world = this.displayWorld!;
+    const baseline = this.lastFieldState ?? samplePackedFieldState(world, this.displayTick);
+    return {
+      entities: packEntityFrame(world, this.displayTick),
+      fields: packFieldKeyframe(baseline),
+    };
   }
 
   /** Step display world once. Call at ~30fps. Returns broadcast data. */
@@ -655,7 +957,7 @@ export class SimulationController {
 
     const entities: ArrayBuffer = packEntityFrame(world, this.displayTick);
     const fields = this.displayTick % DISPLAY_CONFIG.fieldFrameInterval === 1
-      ? packFieldFrame(world, this.displayTick)
+      ? this.packScheduledFields(world)
       : undefined;
     const meta: MetaBroadcast = {
       generation:  this.generation,

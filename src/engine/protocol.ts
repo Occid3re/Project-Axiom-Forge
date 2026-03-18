@@ -30,6 +30,27 @@ export interface DecodedFieldFrame {
 
 const ENTITY_MAGIC = 0x41584645; // "AXFE"
 const FIELD_MAGIC  = 0x41584646; // "AXFF"
+const FIELD_HEADER_BYTES = 32;
+const FIELD_PACKET_KIND_KEYFRAME = 0;
+const FIELD_PACKET_KIND_DELTA = 1;
+const FIELD_PLANE_RESOURCES = 1;
+const FIELD_PLANE_SIGNALS = 2;
+const FIELD_PLANE_POISON = 4;
+const FIELD_PLANE_GLYPHS = 8;
+
+interface PackedFieldState {
+  gridW: number;
+  gridH: number;
+  step: number;
+  outW: number;
+  outH: number;
+  resources: Uint8Array;
+  signals: Uint8Array;
+  poison: Uint8Array;
+  glyphs: Uint8Array;
+}
+
+let lastPackedFieldState: PackedFieldState | null = null;
 
 function expandScalarField(
   source: Uint8Array,
@@ -87,6 +108,48 @@ function expandSignalField(
   return out;
 }
 
+function applyScalarTile(
+  dest: Uint8Array,
+  source: Uint8Array,
+  offset: number,
+  outW: number,
+  tileX: number,
+  tileY: number,
+  tileSize: number,
+  tileW: number,
+  tileH: number,
+): number {
+  const startX = tileX * tileSize;
+  const startY = tileY * tileSize;
+  for (let dy = 0; dy < tileH; dy++) {
+    const rowStart = (startY + dy) * outW + startX;
+    dest.set(source.subarray(offset, offset + tileW), rowStart);
+    offset += tileW;
+  }
+  return offset;
+}
+
+function applySignalTile(
+  dest: Uint8Array,
+  source: Uint8Array,
+  offset: number,
+  outW: number,
+  tileX: number,
+  tileY: number,
+  tileSize: number,
+  tileW: number,
+  tileH: number,
+): number {
+  const startX = tileX * tileSize;
+  const startY = tileY * tileSize;
+  for (let dy = 0; dy < tileH; dy++) {
+    const rowStart = ((startY + dy) * outW + startX) * 3;
+    dest.set(source.subarray(offset, offset + tileW * 3), rowStart);
+    offset += tileW * 3;
+  }
+  return offset;
+}
+
 export function decodeEntityFrame(buf: ArrayBuffer): DecodedEntityFrame | null {
   if (buf.byteLength < 20) return null;
   const view = new DataView(buf);
@@ -112,7 +175,7 @@ export function decodeEntityFrame(buf: ArrayBuffer): DecodedEntityFrame | null {
 }
 
 export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
-  if (buf.byteLength < 20) return null;
+  if (buf.byteLength < FIELD_HEADER_BYTES) return null;
   const view = new DataView(buf);
   if (view.getUint32(0, true) !== FIELD_MAGIC) return null;
 
@@ -120,21 +183,76 @@ export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
   const gridH = view.getUint32(8, true);
   const step  = Math.max(1, view.getUint32(12, true));
   const tick  = view.getUint32(16, true);
+  const kind = view.getUint32(20, true);
+  const aux0 = view.getUint32(24, true);
+  const aux1 = view.getUint32(28, true);
   const fieldW = Math.max(1, Math.floor(gridW / step));
   const fieldH = Math.max(1, Math.floor(gridH / step));
   const cells = fieldW * fieldH;
   const u8 = new Uint8Array(buf);
 
-  let offset = 20;
-  const packedResources = u8.slice(offset, offset + cells); offset += cells;
-  const packedSignals   = u8.slice(offset, offset + cells * 3); offset += cells * 3;
-  const packedPoison    = u8.slice(offset, offset + cells); offset += cells;
-  const packedGlyphs    = u8.slice(offset, offset + cells);
+  if (kind === FIELD_PACKET_KIND_KEYFRAME) {
+    let offset = FIELD_HEADER_BYTES;
+    const packedResources = u8.slice(offset, offset + cells); offset += cells;
+    const packedSignals   = u8.slice(offset, offset + cells * 3); offset += cells * 3;
+    const packedPoison    = u8.slice(offset, offset + cells); offset += cells;
+    const packedGlyphs    = u8.slice(offset, offset + cells);
+    lastPackedFieldState = {
+      gridW,
+      gridH,
+      step,
+      outW: fieldW,
+      outH: fieldH,
+      resources: packedResources,
+      signals: packedSignals,
+      poison: packedPoison,
+      glyphs: packedGlyphs,
+    };
+  } else if (kind === FIELD_PACKET_KIND_DELTA) {
+    const tileSize = Math.max(1, aux0);
+    const tileCount = aux1;
+    if (
+      !lastPackedFieldState
+      || lastPackedFieldState.gridW !== gridW
+      || lastPackedFieldState.gridH !== gridH
+      || lastPackedFieldState.step !== step
+      || lastPackedFieldState.outW !== fieldW
+      || lastPackedFieldState.outH !== fieldH
+    ) {
+      return null;
+    }
 
-  const resources = expandScalarField(packedResources, gridW, gridH, step);
-  const signals = expandSignalField(packedSignals, gridW, gridH, step);
-  const poison = expandScalarField(packedPoison, gridW, gridH, step);
-  const glyphs = expandScalarField(packedGlyphs, gridW, gridH, step);
+    let offset = FIELD_HEADER_BYTES;
+    for (let i = 0; i < tileCount; i++) {
+      const tileX = view.getUint16(offset, true);
+      const tileY = view.getUint16(offset + 2, true);
+      const planeMask = u8[offset + 4];
+      offset += 5;
+      const tileW = Math.min(tileSize, fieldW - tileX * tileSize);
+      const tileH = Math.min(tileSize, fieldH - tileY * tileSize);
+      if (planeMask & FIELD_PLANE_RESOURCES) {
+        offset = applyScalarTile(lastPackedFieldState.resources, u8, offset, fieldW, tileX, tileY, tileSize, tileW, tileH);
+      }
+      if (planeMask & FIELD_PLANE_SIGNALS) {
+        offset = applySignalTile(lastPackedFieldState.signals, u8, offset, fieldW, tileX, tileY, tileSize, tileW, tileH);
+      }
+      if (planeMask & FIELD_PLANE_POISON) {
+        offset = applyScalarTile(lastPackedFieldState.poison, u8, offset, fieldW, tileX, tileY, tileSize, tileW, tileH);
+      }
+      if (planeMask & FIELD_PLANE_GLYPHS) {
+        offset = applyScalarTile(lastPackedFieldState.glyphs, u8, offset, fieldW, tileX, tileY, tileSize, tileW, tileH);
+      }
+    }
+  } else {
+    return null;
+  }
+
+  if (!lastPackedFieldState) return null;
+
+  const resources = expandScalarField(lastPackedFieldState.resources, gridW, gridH, step);
+  const signals = expandSignalField(lastPackedFieldState.signals, gridW, gridH, step);
+  const poison = expandScalarField(lastPackedFieldState.poison, gridW, gridH, step);
+  const glyphs = expandScalarField(lastPackedFieldState.glyphs, gridW, gridH, step);
 
   return { gridW, gridH, tick, resources, signals, poison, glyphs };
 }

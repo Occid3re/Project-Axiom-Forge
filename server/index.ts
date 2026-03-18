@@ -59,6 +59,11 @@ setInterval(() => {
 io.on('connection', (socket) => {
   connectedClients++;
   console.log(`[io] +client (${connectedClients} total)`);
+  const bootstrap = sim.getBootstrapFrames();
+  if (bootstrap) {
+    socket.emit('fields', bootstrap.fields);
+    socket.emit('entities', bootstrap.entities);
+  }
   socket.on('disconnect', () => {
     connectedClients--;
     console.log(`[io] -client (${connectedClients} total)`);
