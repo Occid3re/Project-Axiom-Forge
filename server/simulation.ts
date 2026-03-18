@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
 
 interface SavedState {
   version: number;
@@ -54,12 +54,13 @@ const EVAL_CONFIG = {
     communication:    2.0,   // reduced: lagged correlation is harder
     envStructure:     1.0,
     adaptability:     1.8,
-    speciation:       1.5,   // NEW: rewards genome clustering (real species)
+    speciation:       1.5,   // rewards genome clustering (real species)
+    interactions:     1.5,   // rewards predator-prey arms races (attacks + signals + survival)
   },
   // Escalating stagnation tiers
   stagnationMild:           30,   // 25% random, 2× mutation
   stagnationAggressive:    100,   // 50% random, 4× mutation
-  stagnationReset:         300,   // full population reset from scratch
+  stagnationReset:         200,   // full population reset from scratch
   stagnationRandomFraction: 0.25,
   minImprovementRatio:      0.01,
   cpuTargetMs:              0.8,

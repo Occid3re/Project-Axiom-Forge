@@ -28,6 +28,7 @@ const DEFAULT_SCORE_WEIGHTS = {
   envStructure:     1.0,
   adaptability:     1.8,
   speciation:       1.5,
+  interactions:     1.5,
 };
 
 interface JobMessage {

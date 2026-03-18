@@ -78,6 +78,7 @@ export function StatsPanel({ snapshot, scores, generation, worldIndex, totalWorl
           <ScoreBar label="Environment" value={scores.envStructure} />
           <ScoreBar label="Adaptability" value={scores.adaptability} />
           <ScoreBar label="Speciation" value={scores.speciation ?? 0} />
+          <ScoreBar label="Interactions" value={scores.interactions ?? 0} />
           <div className="mt-2 pt-2 border-t border-gray-700/50">
             <div className="flex justify-between items-center">
               <span className="text-gray-300 text-xs font-semibold">Total Score</span>

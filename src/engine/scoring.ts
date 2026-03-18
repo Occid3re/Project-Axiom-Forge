@@ -21,6 +21,7 @@ export interface WorldScores {
   envStructure: number;
   adaptability: number;
   speciation: number;
+  interactions: number;
   total: number;
 }
 
@@ -31,7 +32,7 @@ export function scoreWorld(
 ): WorldScores {
   const snaps = history.snapshots;
   if (snaps.length === 0) {
-    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, total: 0 };
+    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, interactions: 0, total: 0 };
   }
 
   // Mutation chaos factor: high mutRate × mutStrength = cheap diversity → discount
@@ -45,6 +46,7 @@ export function scoreWorld(
   const envStructure = scoreEnvStructure(snaps);
   const adaptability = scoreAdaptability(history);
   const speciation = scoreSpeciation(snaps);
+  const interactions = scoreInteractions(snaps);
 
   const total =
     (weights.persistence ?? 1) * persistence +
@@ -53,9 +55,10 @@ export function scoreWorld(
     (weights.communication ?? 1) * communication +
     (weights.envStructure ?? 1) * envStructure +
     (weights.adaptability ?? 1) * adaptability +
-    (weights.speciation ?? 0) * speciation;
+    (weights.speciation ?? 0) * speciation +
+    (weights.interactions ?? 0) * interactions;
 
-  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, total };
+  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, interactions, total };
 }
 
 function scorePersistence(snaps: WorldSnapshot[]): number {
@@ -188,6 +191,31 @@ function scoreSpeciation(snaps: WorldSnapshot[]): number {
   // Normalize: variance of normalized distances typically 0–2.
   // Score 0.5 → full credit (strong clustering).
   return Math.min(1, meanVar / 0.5);
+}
+
+function scoreInteractions(snaps: WorldSnapshot[]): number {
+  // Reward ecological richness: worlds where entities attack, signal, AND survive.
+  // Passive grazer monocultures score low. Predator-prey arms races score high.
+  if (snaps.length < 20) return 0;
+
+  const popSnaps = snaps.filter(s => s.population > 2);
+  if (popSnaps.length < 10) return 0;
+
+  // Mean attack rate (attacks per entity per tick)
+  const attackRate = mean(popSnaps.map(s => s.attacks / s.population));
+  // Mean signal rate
+  const signalRate = mean(popSnaps.map(s => s.signals / s.population));
+
+  // Attacks should exist but not dominate (arms race, not massacre)
+  // Sweet spot: ~0.05–0.3 attacks per entity per tick
+  const attackScore = attackRate > 0.01
+    ? Math.min(1, attackRate * 5) * Math.min(1, 0.5 / (attackRate + 0.01))
+    : 0;
+  // Signal usage — any meaningful signaling
+  const signalScore = Math.min(1, signalRate * 3);
+
+  // Both present = rich ecology (geometric mean rewards balance)
+  return Math.sqrt(attackScore * signalScore);
 }
 
 // --- Utilities ---

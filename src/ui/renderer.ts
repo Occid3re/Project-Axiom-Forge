@@ -383,9 +383,38 @@ export class WorldRenderer {
       const trailStr = energy * (0.5 + motility * 0.5);
       if (trail[ti] < trailStr) trail[ti] = trailStr;
 
-      // ── Morphology from genome complexity ───────────────────────────────
-      // Elongation: round coccus (1.0) → elongated rod (2.2)
-      const aspect = 1.0 + complexity * 1.2;
+      // ── Body plan classification ─────────────────────────────────────
+      // 5 distinct shapes from genome traits: coccus, bacillus, vibrio, amoeba, dividing
+      const aggression = f.entityAggression[e] / 255;
+
+      let plan: number;       // 0=coccus, 1=bacillus, 2=vibrio, 3=amoeba, 4=dividing
+      let planAspect: number;
+      let curvature = 0;      // vibrio bend strength
+      let lobeCount = 0;      // amoeba pseudopod count
+      let lobeAmp = 0;        // amoeba pseudopod depth
+      let pinch = 0;          // dividing constriction
+
+      if (energy > 0.7) {
+        plan = 4;             // DIVIDING — high energy, about to split
+        planAspect = 1.4 + complexity * 0.6;
+        pinch = 0.35 + (energy - 0.7) * 1.5;
+      } else if (aggression > 0.55) {
+        plan = 2;             // VIBRIO — predators are comma-shaped
+        planAspect = 1.3 + complexity * 0.8;
+        curvature = 0.25 + aggression * 0.35;
+      } else if (complexity > 0.5 && motility < 0.4) {
+        plan = 3;             // AMOEBA — evolved sessile → star-shaped pseudopods
+        planAspect = 1.0 + complexity * 0.3;
+        lobeCount = 3 + Math.floor(complexity * 4); // 3-7 lobes
+        lobeAmp = 0.25 + complexity * 0.25;
+      } else if (complexity < 0.3 && aggression < 0.35) {
+        plan = 0;             // COCCUS — simple round cells
+        planAspect = 1.0 + complexity * 0.15;
+      } else {
+        plan = 1;             // BACILLUS — elongated rod (default)
+        planAspect = 1.0 + complexity * 1.2;
+      }
+
       // Orientation: species-dependent angle
       const angle = (speciesHue / 255) * Math.PI;
       const cosA = Math.cos(angle);
@@ -393,18 +422,19 @@ export class WorldRenderer {
 
       // Cell size: slight growth with complexity + energy
       const cellR = 1.5 + energy * 1.2 + complexity * 0.5;
-      const scanR = Math.ceil(cellR) + 2;
+      const shapeExtra = plan === 3 ? (lobeAmp * cellR) : plan === 2 ? (curvature * 2) : 0;
+      const scanR = Math.ceil(cellR + shapeExtra) + 2;
 
       // Membrane thickness: thin (early) → thick ruffled (evolved)
-      const membraneWidth = 0.30 + complexity * 0.20; // fraction of radius
+      const membraneWidth = 0.30 + complexity * 0.20;
       const membraneStart = 1.0 - membraneWidth;
 
       // Internal structure: organelle count and visibility
-      const organelleStr = complexity * 0.12; // faint → visible
-      const organelleFreq = 1.5 + complexity * 3.0; // spatial frequency
+      const organelleStr = complexity * 0.12;
+      const organelleFreq = 1.5 + complexity * 3.0;
 
-      // Flagella: motile evolved entities grow extensions at poles
-      const flagella = motility * complexity;
+      // Flagella: only on motile elongated forms (bacillus/vibrio)
+      const flagella = (plan === 1 || plan === 2) ? motility * complexity : 0;
 
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
@@ -412,10 +442,31 @@ export class WorldRenderer {
           const ny = cy + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
 
-          // Rotated + elongated distance (species-dependent rod shape)
-          const ldx = dx * cosA + dy * sinA;
-          const ldy = (-dx * sinA + dy * cosA) * aspect;
-          const rr = Math.sqrt(ldx * ldx + ldy * ldy);
+          // Rotated + elongated local coordinates
+          let ldx = dx * cosA + dy * sinA;
+          let ldy = (-dx * sinA + dy * cosA) * planAspect;
+          let rr: number;
+
+          if (plan === 2) {
+            // VIBRIO: bend x-axis quadratically → comma/crescent shape
+            ldx = ldx + curvature * ldy * ldy;
+            rr = Math.sqrt(ldx * ldx + ldy * ldy);
+          } else if (plan === 3) {
+            // AMOEBA: star-shaped via angular radius modulation
+            const pixelAngle = Math.atan2(ldy, ldx);
+            const rawR = Math.sqrt(ldx * ldx + ldy * ldy);
+            const lobePhase = (speciesHue / 255) * Math.PI * 2;
+            const modulation = 1.0 + lobeAmp * Math.cos(pixelAngle * lobeCount + lobePhase);
+            rr = rawR / modulation; // lobes "pull outward"
+          } else if (plan === 4) {
+            // DIVIDING: hourglass pinch at center
+            const pinchFactor = 1.0 - pinch * Math.exp(-ldx * ldx * 2.0);
+            const pinchedLdy = ldy / Math.max(0.3, pinchFactor);
+            rr = Math.sqrt(ldx * ldx + pinchedLdy * pinchedLdy);
+          } else {
+            // COCCUS / BACILLUS: standard ellipse
+            rr = Math.sqrt(ldx * ldx + ldy * ldy);
+          }
 
           // Flagella: extend presence along the long axis beyond the cell body
           let flagellaVal = 0;

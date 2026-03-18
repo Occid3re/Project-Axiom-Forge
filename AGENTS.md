@@ -252,12 +252,18 @@ Anti-gaming measures prevent degenerate "mutation soup" strategies from scoring 
 | envStructure | 1.0 | Variance in resource coverage | — |
 | adaptability | 1.8 | Recovery from population crashes | — |
 | speciation | 1.5 | Variance of pairwise genome distances (high = clusters = real species) | Random drift → low variance; real species → high variance |
+| interactions | 1.5 | Ecological richness: attacks + signals per entity, balanced (geometric mean) | Rewards predator-prey arms races, penalizes passive grazer monocultures |
 
 **Chaos factor** prevents high-mutation strategies from getting free diversity points:
 - starterLaws (mutRate=0.06, mutStrength=0.06): chaosFactor = 0.96× (negligible penalty)
 - Degenerate (mutRate=0.477, mutStrength=0.3): chaosFactor = 0.41× (harsh discount)
 
-**Max theoretical score**: ~10.8 (but chaos discount and lagged correlation make >8.0 genuinely hard)
+**Interactions score** (anti-passive-grazer):
+- Attack rate sweet spot: ~0.05–0.3 per entity per tick (present but not massacre)
+- Signal rate: any meaningful signaling usage
+- Score = `sqrt(attackScore × signalScore)` — geometric mean requires BOTH to be nonzero
+
+**Max theoretical score**: ~12.3 (but chaos discount, lagged correlation, and interaction balance make >8.0 genuinely hard)
 
 ### CPU Efficiency Penalty
 After scoring each eval world (computed in eval-worker.ts):
@@ -285,7 +291,7 @@ When meta-evolution finds no improvement for N generations, increasingly aggress
 |---|---|---|
 | 30 | Mild | 25% random injection, 2× mutation on survivors |
 | 100 | Aggressive | 50% random injection, 4× mutation on survivors |
-| 300 | Hard Reset | Keep alltime best + starter variants, reseed rest fully random. Resets stagnation counter. |
+| 200 | Hard Reset | Keep alltime best + starter variants, reseed rest fully random. Resets stagnation counter. |
 
 The hard reset at 300 gens forces the meta-evolution to re-explore the law space from scratch
 while preserving the best discovery so far. This prevents permanent trapping in local optima.
@@ -300,11 +306,11 @@ while preserving the best discovery so far. This prevents permanent trapping in 
 ### State Persistence
 On every new best score and every generation end, saves to `STATE_PATH`:
 ```json
-{ "version": 3, "generation": N, "bestScore": X, "bestLaws": {...},
+{ "version": 4, "generation": N, "bestScore": X, "bestLaws": {...},
   "lastImprovementGen": N, "generationSummaries": [...], "population": [...] }
 ```
 Loaded on startup (version check). Survives redeploys because the file is outside `server/`.
-**STATE_VERSION=3** — incremented when scoring semantics change (old scores are incomparable).
+**STATE_VERSION=4** — incremented when scoring semantics change (old scores are incomparable).
 
 ---
 
@@ -320,12 +326,18 @@ Loaded on startup (version check). Survives redeploys because the file is outsid
 
 **Cached texture buffers**: CPU-side Uint8Arrays (`_resBuf`, `_entBuf`, `_sigBuf`, `_trailBuf`) are allocated once per grid size change via `ensureTexBufs(n)` instead of per-frame. Eliminates ~1MB/frame GC pressure.
 
-### Evolution-Driven Bacteria Morphology
-Each entity is splatted onto a W×H RGBA texture with shape driven by genome traits:
-- **Complexity** (genome weight std dev, 0–1): controls aspect ratio (1.0 → 2.2), membrane ruffling amplitude, organelle visibility
-- **Motility** (W2 MOVE column, 0–1): drives flagella growth — wavy polar extensions visible at high motility × complexity
-- **SpeciesHue**: determines rod orientation angle (species-dependent)
-- Low-complexity entities appear as round coccus shapes; high-complexity as elongated rods with organelles, ruffled membranes, and flagella
+### 5 Distinct Body Plans (genome-driven morphology)
+Each entity is splatted onto a W×H RGBA texture. Body plan selected from genome traits:
+
+| Plan | Shape | Selection Criteria | Visual |
+|---|---|---|---|
+| **Coccus** | Round sphere | low aggression + low complexity | Simple round dot |
+| **Bacillus** | Elongated rod | moderate complexity (default) | Rod with optional flagella |
+| **Vibrio** | Comma/crescent | aggression > 0.55 | Curved body (`ldx += curvature * ldy²`) |
+| **Amoeba** | Star/pseudopods | complexity > 0.5 + motility < 0.4 | Angular lobes (`cellR * (1 + amp * cos(angle * N))`) |
+| **Dividing** | Hourglass | energy > 0.7 | Pinched center (Gaussian constriction) |
+
+All plans share membrane ring, organelle, and halo rendering. Flagella only on bacillus/vibrio.
 - RGBA: R=presence intensity, G=speciesHue, B=role(attack+signal blend), A=presence mask
 
 ### Phase-Contrast Microscopy Shader
@@ -483,7 +495,7 @@ Static screenshot for social sharing previews. Add `<meta og:image>` to `index.h
 - **Signal saturation**: signals clamped to uint8 at pack time. Very high signal values
   saturate. Not currently a problem.
 
-- **State file versioning**: STATE_VERSION=3. Increment if SavedState shape or scoring semantics change.
+- **State file versioning**: STATE_VERSION=4. Increment if SavedState shape or scoring semantics change.
 
 - **tsx worker inheritance**: Workers spawned with `new Worker(path)` inherit the tsx ESM
   loader from the parent process (tsx v4.7+). No `execArgv` needed.
@@ -539,3 +551,27 @@ memoryPersistence: 0.528 (moderate recurrence)
 6. **Escalating stagnation** — 3 tiers: mild (30 gen), aggressive (100 gen), hard reset (300 gen).
 7. **Larger population** — 12 candidates (was 10), 3 survivors (was 2) for broader search.
 8. **STATE_VERSION bumped to 3** — Forces clean restart with new scoring semantics.
+
+### Follow-up Observation (Gen 1181, same day)
+
+After running with v3 scoring for ~1200 generations, new local optimum found:
+
+**Best Laws (Passive Grazer Optimum)**:
+```
+attackTransfer:    0      (ZERO predation — no combat at all!)
+mutationRate:      0.132  (moderate — chaos factor 0.74×)
+resourceRegenRate: 0.001  (minimum — scarce)
+eatGain:           0.932  (near max — eat everything)
+moveCost:          0.001  (minimum — free movement)
+memoryPersistence: 0.56   (moderate recurrence)
+```
+
+**Problem**: Meta-evolution avoids combat entirely. Without predator-prey dynamics, there are no arms races, no defensive specialization, no ecological niches. Result: boring passive grazer monoculture.
+
+**Also observed**: Stagnant 206 gens in aggressive tier. Aggressive injection (50% random, 4× mutation) wasn't breaking through — hard reset threshold was too high at 300.
+
+### Fixes Applied (v4)
+1. **Interactions metric (new, weight 1.5)** — `sqrt(attackScore × signalScore)` rewards worlds where entities BOTH attack AND signal. Geometric mean = both must be nonzero. Attack sweet spot at 0.05–0.3/entity/tick prevents massacre.
+2. **Hard reset lowered**: 300 → 200 gens. Aggressive injection alone couldn't break through.
+3. **5 distinct body plans** — Creatures no longer all ellipses. Shape selected from genome traits: coccus (round), bacillus (rod), vibrio (comma/crescent for predators), amoeba (star/pseudopods for complex sessile), dividing (hourglass for high energy).
+4. **STATE_VERSION bumped to 4**.
