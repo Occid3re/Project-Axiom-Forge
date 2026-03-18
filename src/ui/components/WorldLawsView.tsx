@@ -38,7 +38,18 @@ export function WorldLawsView({ laws, title = 'World Laws' }: WorldLawsViewProps
         { label: 'Eat Gain', value: laws.eatGain, max: 1 },
         { label: 'Move Cost', value: laws.moveCost, max: 0.1 },
         { label: 'Idle Cost', value: laws.idleCost, max: 0.05 },
+        { label: 'Energy Cap', value: laws.energyCap ?? 1.5, max: 3 },
+        { label: 'Corpse Energy', value: laws.corpseEnergy ?? 0.5, max: 1 },
+        { label: 'Aging Rate', value: laws.agingRate ?? 0, max: 0.01 },
+      ],
+    },
+    {
+      name: 'Combat & Movement',
+      params: [
         { label: 'Attack Transfer', value: laws.attackTransfer, max: 0.8 },
+        { label: 'Attack Range', value: laws.attackRange ?? 1, max: 3 },
+        { label: 'Move Speed', value: laws.moveSpeed ?? 1, max: 3 },
+        { label: 'Spawn Distance', value: laws.spawnDistance ?? 1, max: 4 },
       ],
     },
     {
@@ -47,6 +58,17 @@ export function WorldLawsView({ laws, title = 'World Laws' }: WorldLawsViewProps
         { label: 'Signal Range', value: laws.signalRange, max: 8 },
         { label: 'Channels', value: laws.signalChannels, max: 6 },
         { label: 'Signal Decay', value: laws.signalDecay, max: 1 },
+        { label: 'Signal Cost', value: laws.signalCost ?? 0, max: 0.05 },
+      ],
+    },
+    {
+      name: 'Social & Environment',
+      params: [
+        { label: 'Cooperation', value: laws.cooperationBonus ?? 0, max: 0.15 },
+        { label: 'Crowding Limit', value: laws.crowdingThreshold ?? 3, max: 6 },
+        { label: 'Drift Speed', value: laws.driftSpeed ?? 0, max: 0.4 },
+        { label: 'Poison Strength', value: laws.poisonStrength ?? 0, max: 0.3 },
+        { label: 'Death Toxin', value: laws.deathToxin ?? 0, max: 0.8 },
       ],
     },
     {

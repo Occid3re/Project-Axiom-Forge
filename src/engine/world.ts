@@ -10,7 +10,7 @@
  *   logits  = W2 · h_blend               (6 action logits, W2 = genome[32..79])
  *   action  = softmax_sample(logits)
  *
- * Corpse ecology: dead entities return half their energy to the resource grid.
+ * Corpse ecology: dead entities return energy to the resource grid (corpseEnergy law).
  */
 
 import { GENOME_LENGTH, ActionType, ResourceDist, MAX_MEMORY_SIZE,
@@ -155,6 +155,7 @@ export class World {
     this.decayPoison();
     this.regenerateResources();
     this.maybeDisaster();
+    this.applyDrift();
     this.processEntities();
     this.removeDeadEntities();
 
@@ -234,6 +235,40 @@ export class World {
     }
   }
 
+  private applyDrift(): void {
+    const speed = this.laws.driftSpeed ?? 0;
+    if (speed <= 0) return;
+    const { entities, rng, gridW, gridH, entityMap } = this;
+
+    // Slowly rotating current — direction changes over time
+    const angle = this.tick * 0.003;
+    const driftDx = Math.cos(angle);
+    const driftDy = Math.sin(angle);
+
+    // Each entity has a chance to be pushed by the current
+    for (let i = 0; i < entities.count; i++) {
+      if (!entities.alive[i]) continue;
+      if (rng.random() > speed) continue; // probability-based drift
+
+      const ox = entities.x[i];
+      const oy = entities.y[i];
+      // Quantize drift direction to grid
+      const dx = driftDx > 0.3 ? 1 : driftDx < -0.3 ? -1 : 0;
+      const dy = driftDy > 0.3 ? 1 : driftDy < -0.3 ? -1 : 0;
+      if (dx === 0 && dy === 0) continue;
+
+      const nx = ((ox + dx) % gridW + gridW) % gridW;
+      const ny = ((oy + dy) % gridH + gridH) % gridH;
+      const newCell = ny * gridW + nx;
+      if (entityMap[newCell] < 0) {
+        entityMap[oy * gridW + ox] = -1;
+        entities.x[i] = nx;
+        entities.y[i] = ny;
+        entityMap[newCell] = i;
+      }
+    }
+  }
+
   private processEntities(): void {
     const { entities, rng, laws, gridW, gridH } = this;
     const n = entities.count;
@@ -263,7 +298,9 @@ export class World {
       if (entities.age[i] >= laws.maxAge) { this.killEntity(i); continue; }
       // Server pressure increases base energy costs
       const pressureCost = this.serverPressure * 0.003;
-      entities.energy[i] -= laws.idleCost + airPressure + pressureCost;
+      // Aging: older entities burn more energy (mayfly vs tortoise strategies)
+      const ageCost = (laws.agingRate ?? 0) * entities.age[i];
+      entities.energy[i] -= laws.idleCost + airPressure + pressureCost + ageCost;
       if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
 
       // Poison damage — toxin at entity's cell drains energy
@@ -273,7 +310,9 @@ export class World {
         if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
       }
 
-      // Overcrowding death — density-dependent mortality caps population
+      // Overcrowding vs cooperation — scan neighborhood once
+      const crowdThresh = laws.crowdingThreshold ?? 3;
+      const coopBonus   = laws.cooperationBonus ?? 0;
       {
         const cx = entities.x[i], cy = entities.y[i];
         let nCount = 0;
@@ -285,8 +324,15 @@ export class World {
             if (this.entityMap[ny0 * gridW + nx0] >= 0) nCount++;
           }
         }
-        if (nCount > 2) {
-          entities.energy[i] -= 0.04 * (nCount - 2);
+        // Cooperation: energy bonus per neighbor (rewards herding/clustering)
+        if (coopBonus > 0 && nCount > 0) {
+          entities.energy[i] += coopBonus * Math.min(nCount, crowdThresh);
+          const cap = laws.energyCap ?? 1.5;
+          if (entities.energy[i] > cap) entities.energy[i] = cap;
+        }
+        // Overcrowding penalty beyond threshold
+        if (nCount > crowdThresh) {
+          entities.energy[i] -= 0.04 * (nCount - crowdThresh);
           if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
         }
       }
@@ -322,7 +368,7 @@ export class World {
 
     // 4 sensory inputs (all normalised to ~[0, 1])
     const localResource = resources[ey * gridW + ex];
-    const energyNorm    = Math.min(1, entities.energy[i] / 1.5);
+    const energyNorm    = Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5));
 
     let nearbyEntities = 0;
     let nearbySignal   = 0;
@@ -411,6 +457,7 @@ export class World {
 
   private executeMove(i: number): void {
     const { entities, laws, gridW, gridH, entityMap, rng } = this;
+    const speed = laws.moveSpeed ?? 1;
 
     // Random direction — the MLP learns WHEN to move; where to go emerges from exploration
     let dx = rng.int(-1, 1);
@@ -420,30 +467,38 @@ export class World {
       else                    dy = rng.random() > 0.5 ? 1 : -1;
     }
 
+    // Multi-cell movement: try up to moveSpeed steps in the chosen direction
     const ox = entities.x[i];
     const oy = entities.y[i];
-    const nx = ((ox + dx) % gridW + gridW) % gridW;
-    const ny = ((oy + dy) % gridH + gridH) % gridH;
+    let finalX = ox, finalY = oy;
+    for (let s = 1; s <= speed; s++) {
+      const nx = ((ox + dx * s) % gridW + gridW) % gridW;
+      const ny = ((oy + dy * s) % gridH + gridH) % gridH;
+      if (entityMap[ny * gridW + nx] >= 0) break; // blocked
+      finalX = nx;
+      finalY = ny;
+    }
 
-    const newCell = ny * gridW + nx;
-    if (entityMap[newCell] < 0) {
+    if (finalX !== ox || finalY !== oy) {
       entityMap[oy * gridW + ox] = -1;
-      entities.x[i]        = nx;
-      entities.y[i]        = ny;
-      entityMap[newCell]   = i;
+      entities.x[i]      = finalX;
+      entities.y[i]      = finalY;
+      entityMap[finalY * gridW + finalX] = i;
       entities.actionDx[i] = dx;
       entities.actionDy[i] = dy;
     }
-    entities.energy[i] -= laws.moveCost;
+    // Faster movement costs more energy
+    entities.energy[i] -= laws.moveCost * speed;
   }
 
   private executeEat(i: number): void {
     const { entities, laws, resources, gridW } = this;
     const cellIdx   = entities.y[i] * gridW + entities.x[i];
+    const cap       = laws.energyCap ?? 1.5;
     const gain      = Math.min(resources[cellIdx], laws.eatGain);
     entities.energy[i]  += gain;
     resources[cellIdx]  -= gain;
-    if (entities.energy[i] > 1.5) entities.energy[i] = 1.5;
+    if (entities.energy[i] > cap) entities.energy[i] = cap;
   }
 
   private executeReproduce(i: number): void {
@@ -455,9 +510,10 @@ export class World {
     const ox = entities.x[i];
     const oy = entities.y[i];
 
+    const spawnDist = laws.spawnDistance ?? 1;
     for (let attempt = 0; attempt < 8; attempt++) {
-      const dx = rng.int(-1, 1);
-      const dy = rng.int(-1, 1);
+      const dx = rng.int(-spawnDist, spawnDist);
+      const dy = rng.int(-spawnDist, spawnDist);
       if (dx === 0 && dy === 0) continue;
 
       const nx   = ((ox + dx) % gridW + gridW) % gridW;
@@ -528,6 +584,9 @@ export class World {
         signals[(ny * gridW + nx) * laws.signalChannels + channel] += strength * attenuation;
       }
     }
+    // Signaling costs energy — makes it a real strategic trade-off
+    const sigCost = laws.signalCost ?? 0;
+    if (sigCost > 0) entities.energy[i] -= sigCost;
     this.tickSignals++;
   }
 
@@ -536,10 +595,11 @@ export class World {
     const ox = entities.x[i];
     const oy = entities.y[i];
 
-    // Always target nearest entity — the MLP learns to use ATTACK strategically
+    // Target nearest entity within attack range
+    const atkRange = laws.attackRange ?? 1;
     let minDist = 99, tdx = 0, tdy = 0;
-    for (let dy2 = -1; dy2 <= 1; dy2++) {
-      for (let dx2 = -1; dx2 <= 1; dx2++) {
+    for (let dy2 = -atkRange; dy2 <= atkRange; dy2++) {
+      for (let dx2 = -atkRange; dx2 <= atkRange; dx2++) {
         if (dx2 === 0 && dy2 === 0) continue;
         const nx2 = ((ox + dx2) % gridW + gridW) % gridW;
         const ny2 = ((oy + dy2) % gridH + gridH) % gridH;
@@ -567,7 +627,7 @@ export class World {
         entities.energy[i] += 0.45; // kill bonus — applied before cap
         this.killEntity(target);
       }
-      entities.energy[i] = Math.min(1.5, entities.energy[i]);
+      entities.energy[i] = Math.min(laws.energyCap ?? 1.5, entities.energy[i]);
       this.tickAttacks++;
     }
   }
@@ -576,8 +636,9 @@ export class World {
     const { entities, entityMap, gridW, resources, resourceCapacity, poison, laws } = this;
     const cellIdx = entities.y[i] * gridW + entities.x[i];
 
-    // Corpse ecology: dead entities deposit half their energy back into the grid.
-    const deposit = entities.energy[i] * 0.5;
+    // Corpse ecology: dead entities return energy to the grid.
+    const corpseRatio = laws.corpseEnergy ?? 0.5;
+    const deposit = entities.energy[i] * corpseRatio;
     if (deposit > 0) {
       resources[cellIdx] = Math.min(resourceCapacity[cellIdx], resources[cellIdx] + deposit);
     }

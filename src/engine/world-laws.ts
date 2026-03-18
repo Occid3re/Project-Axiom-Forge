@@ -46,9 +46,32 @@ export interface WorldLaws {
   carryingCapacity: number;
 
   // Poison — toxin deposited by dying entities, damages living ones.
-  // Creates hazardous "dead zones" around battlefields and mass die-offs.
   poisonStrength: number;   // 0.0–0.3: damage per tick at full concentration
   deathToxin: number;       // 0.0–0.8: poison deposited when an entity dies
+
+  // Movement & combat
+  moveSpeed: number;        // 1–3: cells per MOVE action (fast movers burn more energy)
+  attackRange: number;      // 1–3: search radius for attack targets (ranged vs melee)
+
+  // Reproduction & offspring
+  spawnDistance: number;     // 1–4: how far offspring appear (colonial vs dispersal)
+
+  // Social dynamics
+  cooperationBonus: number; // 0.0–0.15: energy bonus per friendly neighbor per tick (herding)
+  crowdingThreshold: number;// 1–6: neighbors before overcrowding penalty kicks in
+
+  // Entity limits
+  energyCap: number;        // 0.5–3.0: max energy per entity (tanky vs fragile)
+  signalCost: number;       // 0.0–0.05: energy cost per signal action
+
+  // Corpse ecology
+  corpseEnergy: number;     // 0.1–1.0: fraction of energy returned to grid on death
+
+  // Aging
+  agingRate: number;        // 0.0–0.01: extra energy drain per tick, proportional to age
+
+  // Environment
+  driftSpeed: number;       // 0.0–0.4: strength of environmental current pushing entities
 }
 
 interface FloatRange {
@@ -73,6 +96,12 @@ const FLOAT_RANGES: Record<string, FloatRange> = {
   carryingCapacity: { min: 0.02, max: 0.30 },
   poisonStrength: { min: 0.0, max: 0.3 },
   deathToxin: { min: 0.0, max: 0.8 },
+  cooperationBonus: { min: 0.0, max: 0.15 },
+  energyCap: { min: 0.5, max: 3.0 },
+  signalCost: { min: 0.0, max: 0.05 },
+  corpseEnergy: { min: 0.1, max: 1.0 },
+  agingRate: { min: 0.0, max: 0.01 },
+  driftSpeed: { min: 0.0, max: 0.4 },
 };
 
 const INT_RANGES: Record<string, { min: number; max: number }> = {
@@ -81,6 +110,10 @@ const INT_RANGES: Record<string, { min: number; max: number }> = {
   memorySize: { min: 1, max: 16 },
   maxPerceptionRadius: { min: 1, max: 6 },
   maxAge: { min: 200, max: 800 },
+  moveSpeed: { min: 1, max: 3 },
+  attackRange: { min: 1, max: 3 },
+  spawnDistance: { min: 1, max: 4 },
+  crowdingThreshold: { min: 1, max: 6 },
 };
 
 // --- Seeded PRNG (xoshiro128**) for deterministic runs ---
@@ -167,6 +200,16 @@ export function randomLaws(rng: PRNG): WorldLaws {
     carryingCapacity: rng.uniform(0.02, 0.30),
     poisonStrength: rng.uniform(0.0, 0.3),
     deathToxin: rng.uniform(0.0, 0.8),
+    moveSpeed: rng.int(1, 3),
+    attackRange: rng.int(1, 3),
+    spawnDistance: rng.int(1, 4),
+    cooperationBonus: rng.uniform(0.0, 0.15),
+    crowdingThreshold: rng.int(1, 6),
+    energyCap: rng.uniform(0.5, 3.0),
+    signalCost: rng.uniform(0.0, 0.05),
+    corpseEnergy: rng.uniform(0.1, 1.0),
+    agingRate: rng.uniform(0.0, 0.01),
+    driftSpeed: rng.uniform(0.0, 0.4),
   };
 }
 
@@ -223,6 +266,16 @@ export function starterLaws(): WorldLaws {
     carryingCapacity:     0.10,
     poisonStrength:       0.05,
     deathToxin:           0.25,
+    moveSpeed:            1,
+    attackRange:          1,
+    spawnDistance:         1,
+    cooperationBonus:     0.03,
+    crowdingThreshold:    3,
+    energyCap:            1.5,
+    signalCost:           0.01,
+    corpseEnergy:         0.50,
+    agingRate:            0.002,
+    driftSpeed:           0.05,
   };
 }
 
