@@ -289,6 +289,8 @@ export default function App() {
                   ['Interactions',  scores.interactions ?? 0, '#ef4444'],
                   ['Spatial',       scores.spatialStructure ?? 0, '#14b8a6'],
                   ['Dynamics',      scores.populationDynamics ?? 0, '#e11d48'],
+                  ['Stigmergy',     scores.stigmergicUse ?? 0, '#d97706'],
+                  ['Social',        scores.socialDifferentiation ?? 0, '#0ea5e9'],
                 ] as [string, number, string][]).map(([label, val, color]) => (
                   <div key={label} className="mb-1.5">
                     <div className="flex justify-between text-[8px] mb-0.5">
@@ -386,6 +388,8 @@ export default function App() {
                     ['Interact', scores.interactions ?? 0, '#ef4444'],
                     ['Spatial',  scores.spatialStructure ?? 0, '#14b8a6'],
                     ['Dynamic',  scores.populationDynamics ?? 0, '#e11d48'],
+                    ['Stigm',    scores.stigmergicUse ?? 0, '#d97706'],
+                    ['Social',   scores.socialDifferentiation ?? 0, '#0ea5e9'],
                   ] as [string, number, string][]).map(([label, val, color]) => (
                     <div key={label} className="flex flex-col items-center shrink-0 min-w-[36px]">
                       <div className="w-6 h-6 rounded-full flex items-center justify-center mb-0.5"

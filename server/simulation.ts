@@ -18,7 +18,7 @@ import { dirname, resolve } from 'path';
 import { World, type WorldSnapshot } from '../src/engine/world.ts';
 import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws, starterLaws } from '../src/engine/world-laws.ts';
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
-import { GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE } from '../src/engine/constants.ts';
+import { GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE, GLYPH_CHANNELS } from '../src/engine/constants.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 7;
+const STATE_VERSION = 8;
 
 interface SavedState {
   version: number;
@@ -56,8 +56,10 @@ const EVAL_CONFIG = {
     adaptability:     1.0,   // reduced: stop rewarding static populations
     speciation:       3.0,   // doubled: we WANT visible species
     interactions:     3.5,   // big increase: predator-prey is what makes watching fun
-    spatialStructure: 1.5,   // NEW: reward clustering/territories, penalize uniform soup
-    populationDynamics: 1.5, // NEW: reward oscillation, penalize flat population lines
+    spatialStructure: 1.5,   // reward clustering/territories, penalize uniform soup
+    populationDynamics: 1.5, // reward oscillation, penalize flat population lines
+    stigmergicUse: 2.5,     // reward balanced deposit/absorb glyph usage
+    socialDifferentiation: 3.0, // reward kin-selective behavior
   },
   // Escalating stagnation tiers
   stagnationMild:           30,   // 25% random, 2× mutation
@@ -133,8 +135,8 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
   const { gridW: W, gridH: H, entityCount, signalChannels } = vs;
   const channels   = Math.min(signalChannels, 3);
-  // Always allocate 3 signal bytes per cell (write loop pads missing channels with 0)
-  const totalBytes = 20 + W * H + W * H * 3 + W * H + entityCount * 8;
+  // Layout: header(20) + resources(WH) + signals(WH×3) + poison(WH) + glyphs(WH) + entities(N×8)
+  const totalBytes = 20 + W * H + W * H * 3 + W * H + W * H + entityCount * 8;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
@@ -157,13 +159,22 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
   }
   // Poison grid
   for (let i = 0; i < W * H; i++) u8[offset++] = Math.min(255, (vs.poison[i] * 255) | 0);
+  // Glyph grid: encode magnitude of 4-channel glyph vector as uint8
+  for (let i = 0; i < W * H; i++) {
+    let mag = 0;
+    const base = i * GLYPH_CHANNELS;
+    for (let c = 0; c < GLYPH_CHANNELS; c++) {
+      mag += vs.glyphs[base + c] * vs.glyphs[base + c];
+    }
+    u8[offset++] = Math.min(255, (Math.sqrt(mag) * 128) | 0);
+  }
   // X, Y, Energy, Action arrays
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityX[e] & 0xff;
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityY[e] & 0xff;
   for (let e = 0; e < entityCount; e++) u8[offset++] = Math.min(255, (vs.entityEnergy[e] * 255) | 0);
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityAction[e];
 
-  // Aggression byte: mean of W2 ATTACK column, sigmoid → how much this network hunts
+  // Aggression byte: mean of W2 ATTACK column (a=5), sigmoid → hunt tendency
   for (let e = 0; e < entityCount; e++) {
     let attackSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
@@ -172,7 +183,7 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
     u8[offset++] = Math.round(255 / (1 + Math.exp(-attackSum * 0.4)));
   }
 
-  // Species hue byte: W2 SIGNAL column + W2 EAT column → behaviour fingerprint
+  // Species hue byte: W2 SIGNAL column (a=4) + W2 EAT column (a=2) → behaviour fingerprint
   for (let e = 0; e < entityCount; e++) {
     let sigSum = 0, eatSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
@@ -184,10 +195,7 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
     u8[offset++] = Math.round((sigTend * 0.6 + eatTend * 0.4) * 255);
   }
 
-  // Genome complexity byte: standard deviation of all 80 genome weights → 0-255.
-  // Xavier-initialised weights start with std ≈ 0.5–0.7. After sustained evolution
-  // and selection pressure, std rises to 1.5–3+. Sigmoid mapping makes early
-  // genomes look simple (low complexity) and evolved ones look elaborate.
+  // Genome complexity byte: standard deviation of all genome weights → 0-255
   for (let e = 0; e < entityCount; e++) {
     const gOff = e * GENOME_LENGTH;
     let sum = 0, sum2 = 0;
@@ -198,11 +206,10 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
     const mean = sum / GENOME_LENGTH;
     const variance = sum2 / GENOME_LENGTH - mean * mean;
     const std = Math.sqrt(Math.max(0, variance));
-    // Map: std=0.5→~30, std=1.0→~100, std=2.0→~200, std=3.0→~240
     u8[offset++] = Math.round(255 / (1 + Math.exp(-(std - 1.2) * 2.5)));
   }
 
-  // Motility byte: W2 MOVE column mean, sigmoid → how much this network moves
+  // Motility byte: W2 MOVE column (a=1) mean, sigmoid → movement drive
   for (let e = 0; e < entityCount; e++) {
     let moveSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
@@ -231,7 +238,7 @@ export interface MetaBroadcast {
   evalSpeed:    number;       // effective eval ticks/sec (across all workers)
   serverMs:     number;       // EMA of display world step time (ms)
   serverPressure: number;     // 0-2: how much the world is punishing creatures for server load
-  sampleGenome?: number[];    // 80 MLP weights of the most-energetic display entity
+  sampleGenome?: number[];    // 180 MLP weights of the most-energetic display entity
 }
 
 // ── Main controller ─────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ export interface DecodedFrame {
   resources: Uint8Array;   // W*H uint8
   signals: Uint8Array;     // W*H*3 uint8
   poison: Uint8Array;      // W*H uint8 — toxin concentration
+  glyphs: Uint8Array;      // W*H uint8 — glyph magnitude (stigmergic memory)
   entityX: Uint8Array;
   entityY: Uint8Array;
   entityEnergy: Uint8Array;
@@ -40,6 +41,7 @@ export function decodeFrame(buf: ArrayBuffer): DecodedFrame | null {
   const resources = u8.slice(offset, offset + cells); offset += cells;
   const signals   = u8.slice(offset, offset + cells * 3); offset += cells * 3;
   const poison    = u8.slice(offset, offset + cells); offset += cells;
+  const glyphs    = u8.slice(offset, offset + cells); offset += cells;
 
   const entityX          = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityY          = u8.slice(offset, offset + entityCount); offset += entityCount;
@@ -50,7 +52,7 @@ export function decodeFrame(buf: ArrayBuffer): DecodedFrame | null {
   const entityComplexity = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityMotility   = u8.slice(offset, offset + entityCount);
 
-  return { gridW, gridH, entityCount, tick, resources, signals, poison, entityX, entityY, entityEnergy, entityAction, entityAggression, entitySpeciesHue, entityComplexity, entityMotility };
+  return { gridW, gridH, entityCount, tick, resources, signals, poison, glyphs, entityX, entityY, entityEnergy, entityAction, entityAggression, entitySpeciesHue, entityComplexity, entityMotility };
 }
 
 export interface ServerMeta {
@@ -65,7 +67,9 @@ export interface ServerMeta {
     persistence: number; diversity: number; complexityGrowth: number;
     communication: number; envStructure: number; adaptability: number;
     speciation: number; interactions: number;
-    spatialStructure: number; populationDynamics: number; total: number;
+    spatialStructure: number; populationDynamics: number;
+    stigmergicUse: number; socialDifferentiation: number;
+    total: number;
   } | null;
   bestScore: number;
   generations: Array<{ gen: number; best: number; avg: number }>;
@@ -74,5 +78,5 @@ export interface ServerMeta {
   evalSpeed?: number;
   serverMs?: number;       // EMA ms per display step — server load indicator
   serverPressure?: number; // 0-2: environmental harshness from server load
-  sampleGenome?: number[]; // 80 MLP weights of the most-energetic display entity
+  sampleGenome?: number[]; // 180 MLP weights of the most-energetic display entity
 }

@@ -52,8 +52,9 @@ const SCENE_FRAG = `
     vec4 sig   = texture2D(u_sig,   wuv);
     vec4 trail = texture2D(u_trail, wuv);
 
-    float r = res.r;      // resource concentration
-    float poison = res.g; // toxin concentration
+    float r = res.r;       // resource concentration
+    float poison = res.g;  // toxin concentration
+    float glyph = res.b;   // stigmergic memory magnitude
 
     // Dark microscope field
     vec3 color = vec3(0.004, 0.006, 0.010);
@@ -72,6 +73,11 @@ const SCENE_FRAG = `
     float poisonPulse = 0.85 + 0.15 * sin(u_time * 1.2 + wuv.x * 13.0 + wuv.y * 11.0);
     color += vec3(0.45, 0.02, 0.18) * poison * poison * poisonPulse * 0.7;
     color += vec3(0.20, 0.0, 0.08) * poison * 0.3;
+
+    // Stigmergic memory — warm gold/amber glow, subtle shimmer
+    float glyphPulse = 0.90 + 0.10 * sin(u_time * 0.8 + wuv.x * 7.0 + wuv.y * 5.0);
+    color += vec3(0.55, 0.35, 0.05) * glyph * glyph * glyphPulse * 0.6;
+    color += vec3(0.25, 0.15, 0.02) * glyph * 0.3;
 
     // Chemical signal fluorescence — three dye channels (subtle, not lightning)
     float sigR = sig.r * sig.r;  // square for softer falloff — only bright when strong
@@ -358,13 +364,14 @@ export class WorldRenderer {
     for (let i = 0; i < trail.length; i++) trail[i] *= 0.92;
 
     // ── Resource texture ─────────────────────────────────────────────────────
-    // R = resource, G = poison, B = resource (kept for shader compat)
+    // R = resource, G = poison, B = glyph magnitude (stigmergic memory)
     for (let i = 0; i < cells; i++) {
       const v = f.resources[i];
       const p = f.poison[i];
+      const g = f.glyphs?.[i] ?? 0;
       resData[i*4]   = v;            // R: resource
       resData[i*4+1] = p;            // G: poison concentration
-      resData[i*4+2] = v;            // B: resource (backward compat)
+      resData[i*4+2] = g;            // B: glyph magnitude
       resData[i*4+3] = 255;
     }
 

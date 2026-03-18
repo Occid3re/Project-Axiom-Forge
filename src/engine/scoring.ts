@@ -8,6 +8,8 @@
  * - Communication uses lagged correlation (signal→future births, not same-tick coincidence)
  * - ComplexityGrowth requires sustained monotonic increase across quarters
  * - Speciation rewards genome clustering (real species) over uniform random spread
+ * - StigmergicUse rewards balanced deposit/absorb activity
+ * - SocialDifferentiation rewards kin-selective behavior
  */
 
 import type { WorldHistory, WorldSnapshot } from './world';
@@ -24,6 +26,8 @@ export interface WorldScores {
   interactions: number;
   spatialStructure: number;
   populationDynamics: number;
+  stigmergicUse: number;
+  socialDifferentiation: number;
   total: number;
 }
 
@@ -34,11 +38,10 @@ export function scoreWorld(
 ): WorldScores {
   const snaps = history.snapshots;
   if (snaps.length === 0) {
-    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, interactions: 0, spatialStructure: 0, populationDynamics: 0, total: 0 };
+    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, interactions: 0, spatialStructure: 0, populationDynamics: 0, stigmergicUse: 0, socialDifferentiation: 0, total: 0 };
   }
 
   // Mutation chaos factor: high mutRate × mutStrength = cheap diversity → discount
-  // starterLaws (0.06, 0.06) → 0.96x; degenerate (0.477, 0.3) → 0.41x
   const chaosFactor = 1 / (1 + laws.mutationRate * laws.mutationStrength * 10);
 
   const persistence = scorePersistence(snaps);
@@ -51,6 +54,8 @@ export function scoreWorld(
   const interactions = scoreInteractions(snaps);
   const spatialStructure = scoreSpatialStructure(snaps);
   const populationDynamics = scorePopulationDynamics(snaps);
+  const stigmergicUse = scoreStigmergicUse(snaps);
+  const socialDifferentiation = scoreSocialDifferentiation(snaps);
 
   const total =
     (weights.persistence ?? 1) * persistence +
@@ -62,9 +67,11 @@ export function scoreWorld(
     (weights.speciation ?? 0) * speciation +
     (weights.interactions ?? 0) * interactions +
     (weights.spatialStructure ?? 0) * spatialStructure +
-    (weights.populationDynamics ?? 0) * populationDynamics;
+    (weights.populationDynamics ?? 0) * populationDynamics +
+    (weights.stigmergicUse ?? 0) * stigmergicUse +
+    (weights.socialDifferentiation ?? 0) * socialDifferentiation;
 
-  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, interactions, spatialStructure, populationDynamics, total };
+  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, interactions, spatialStructure, populationDynamics, stigmergicUse, socialDifferentiation, total };
 }
 
 function scorePersistence(snaps: WorldSnapshot[]): number {
@@ -90,12 +97,10 @@ function scoreDiversity(snaps: WorldSnapshot[], chaosFactor: number): number {
   }
   if (count === 0) return 0;
   const m = sum / count;
-  // Normalize and apply chaos discount — random drift diversity is cheap
   return Math.min(1, m / 2.0) * chaosFactor;
 }
 
 function scoreComplexityGrowth(snaps: WorldSnapshot[], chaosFactor: number): number {
-  // Sustained growth across 4 quarters — reward monotonic increase, not just first-vs-last
   if (snaps.length < 40) return 0;
 
   const q = Math.floor(snaps.length / 4);
@@ -108,34 +113,28 @@ function scoreComplexityGrowth(snaps: WorldSnapshot[], chaosFactor: number): num
   const qDiv = quarters.map(qs => mean(qs.map(s => s.diversity)));
   const qPop = quarters.map(qs => mean(qs.map(s => s.population)));
 
-  // Count consecutive quarters with diversity growth, weighted by magnitude
   let growthScore = 0;
   for (let i = 1; i < 4; i++) {
     if (qDiv[i] > qDiv[i - 1]) {
       growthScore += Math.min(0.5, (qDiv[i] - qDiv[i - 1]) / (qDiv[i - 1] + 0.01));
     }
   }
-  growthScore = Math.min(1, growthScore / 1.0); // 3 consecutive growths → ~1.0
+  growthScore = Math.min(1, growthScore / 1.0);
 
-  // Population stability — late pop should be sustainable
   const popStability = qPop[3] > 0 ? Math.min(1, qPop[3] / (qPop[0] + 1)) : 0;
 
   return (growthScore * 0.6 + popStability * 0.4) * chaosFactor;
 }
 
 function scoreCommunication(snaps: WorldSnapshot[]): number {
-  // Lagged correlation: signals at tick T should predict births at T+lag.
-  // Test lags 5-15 and take the best. This prevents gaming via coincidental same-tick correlation.
   if (snaps.length < 30) return 0;
 
   const signalArr = snaps.map(s => s.signalActivity);
   const birthArr = snaps.map(s => s.births);
 
-  // Normalized signal usage
   const maxSignal = Math.max(...signalArr) || 1;
   const meanSignal = mean(signalArr) / maxSignal;
 
-  // Find best lagged correlation across lag=[5..15]
   let bestCorr = 0;
   for (let lag = 5; lag <= 15; lag++) {
     if (signalArr.length <= lag + 3) continue;
@@ -181,9 +180,6 @@ function scoreAdaptability(history: WorldHistory): number {
 }
 
 function scoreSpeciation(snaps: WorldSnapshot[]): number {
-  // Reward genome clustering: high variance of pairwise distances = distinct species.
-  // Random drift produces uniform distance distributions (low variance).
-  // Real speciation produces bimodal/multimodal distributions (high variance).
   let sum = 0;
   let count = 0;
   for (const s of snaps) {
@@ -194,41 +190,27 @@ function scoreSpeciation(snaps: WorldSnapshot[]): number {
   }
   if (count === 0) return 0;
   const meanVar = sum / count;
-  // Normalize: variance of normalized distances typically 0–2.
-  // Score 0.5 → full credit (strong clustering).
   return Math.min(1, meanVar / 0.5);
 }
 
 function scoreInteractions(snaps: WorldSnapshot[]): number {
-  // Reward ecological richness: worlds where entities attack, signal, AND survive.
-  // Passive grazer monocultures score low. Predator-prey arms races score high.
   if (snaps.length < 20) return 0;
 
   const popSnaps = snaps.filter(s => s.population > 2);
   if (popSnaps.length < 10) return 0;
 
-  // Mean attack rate (attacks per entity per tick)
   const attackRate = mean(popSnaps.map(s => s.attacks / s.population));
-  // Mean signal rate
   const signalRate = mean(popSnaps.map(s => s.signals / s.population));
 
-  // Attacks should exist but not dominate (arms race, not massacre)
-  // Sweet spot: ~0.05–0.3 attacks per entity per tick
   const attackScore = attackRate > 0.01
     ? Math.min(1, attackRate * 5) * Math.min(1, 0.5 / (attackRate + 0.01))
     : 0;
-  // Signal usage — any meaningful signaling
   const signalScore = Math.min(1, signalRate * 3);
 
-  // Both present = rich ecology (geometric mean rewards balance)
   return Math.sqrt(attackScore * signalScore);
 }
 
 function scoreSpatialStructure(snaps: WorldSnapshot[]): number {
-  // Reward worlds where population isn't uniformly distributed.
-  // Use variance of births/deaths across time as proxy for spatial hotspots.
-  // A world with localized battles (high birth/death variance) is more
-  // spatially interesting than a uniform monoculture (constant births/deaths).
   if (snaps.length < 40) return 0;
 
   const birthRates = snaps.filter(s => s.population > 2).map(s => s.births / s.population);
@@ -238,12 +220,10 @@ function scoreSpatialStructure(snaps: WorldSnapshot[]): number {
   const birthVar = sampleVariance(birthRates);
   const deathVar = sampleVariance(deathRates);
 
-  // Also reward poison coverage variation (active dead zones forming and clearing)
   const poisonCov = snaps.map(s => s.poisonCoverage);
   const poisonVar = sampleVariance(poisonCov);
   const poisonPresent = mean(poisonCov) > 0.01 ? 0.3 : 0;
 
-  // Penalize very high population (monoculture soup fills the screen)
   const meanPop = mean(snaps.map(s => s.population));
   const overflowPenalty = meanPop > 2000 ? Math.min(0.5, (meanPop - 2000) / 4000) : 0;
 
@@ -252,22 +232,12 @@ function scoreSpatialStructure(snaps: WorldSnapshot[]): number {
 }
 
 function scorePopulationDynamics(snaps: WorldSnapshot[]): number {
-  // Reward oscillating populations (predator-prey cycles, boom-bust).
-  // Penalize flat population lines (boring monoculture equilibrium).
   if (snaps.length < 60) return 0;
 
   const pops = snaps.map(s => s.population);
   const meanPop = mean(pops);
   if (meanPop < 5) return 0;
 
-  // Count direction changes (peaks/troughs) — more = more dynamic
-  let directionChanges = 0;
-  for (let i = 2; i < pops.length; i++) {
-    const prev = pops[i - 1] - pops[i - 2];
-    const curr = pops[i] - pops[i - 1];
-    if ((prev > 0 && curr < 0) || (prev < 0 && curr > 0)) directionChanges++;
-  }
-  // Smooth out noise: count significant changes (>2% of mean population)
   let significantChanges = 0;
   const threshold = meanPop * 0.03;
   let lastPeak = pops[0];
@@ -286,14 +256,60 @@ function scorePopulationDynamics(snaps: WorldSnapshot[]): number {
     if (!rising && pops[i] < lastPeak) lastPeak = pops[i];
   }
 
-  // Coefficient of variation — high = dynamic, low = flat
   const cv = Math.sqrt(sampleVariance(pops)) / (meanPop + 1);
-
-  // Combine: significant oscillations + variability
   const oscillationScore = Math.min(1, significantChanges / 15);
   const cvScore = Math.min(1, cv * 5);
 
   return oscillationScore * 0.6 + cvScore * 0.4;
+}
+
+/**
+ * Reward worlds where entities actively use stigmergic memory (DEPOSIT + ABSORB).
+ * Balanced usage (both deposit and absorb) scores higher than one-sided.
+ */
+function scoreStigmergicUse(snaps: WorldSnapshot[]): number {
+  if (snaps.length < 40) return 0;
+
+  const popSnaps = snaps.filter(s => s.population > 5);
+  if (popSnaps.length < 20) return 0;
+
+  const depositRate = mean(popSnaps.map(s => s.deposits / s.population));
+  const absorbRate  = mean(popSnaps.map(s => s.absorbs / s.population));
+
+  // Both must exist — geometric mean rewards balance
+  const activity = Math.sqrt(depositRate * absorbRate);
+  // Balance factor: penalize one-sided usage
+  const maxRate = Math.max(depositRate, absorbRate);
+  const balance = maxRate > 0.001 ? Math.min(depositRate, absorbRate) / maxRate : 0;
+
+  return Math.min(1, activity * 10) * balance;
+}
+
+/**
+ * Reward worlds where entities behave differently toward kin vs non-kin.
+ * Uses attack selectivity as proxy: do entities preferentially attack strangers?
+ * Also considers deposit/absorb patterns — do kin share glyphs?
+ */
+function scoreSocialDifferentiation(snaps: WorldSnapshot[]): number {
+  if (snaps.length < 40) return 0;
+
+  const popSnaps = snaps.filter(s => s.population > 5);
+  if (popSnaps.length < 20) return 0;
+
+  // Attack rate should differ across time (indicating selective behavior)
+  // When entities are kin-selective, attack rate varies with population composition
+  const attackRates = popSnaps.map(s => s.attacks / s.population);
+  const attackVar = sampleVariance(attackRates);
+
+  // Deposit/absorb covariance with population — social species deposit more when crowded
+  const depositRates = popSnaps.map(s => s.deposits / s.population);
+  const depositVar = sampleVariance(depositRates);
+
+  // Combine: attack variability (selective predation) + deposit variability (social learning)
+  const selectivity = Math.min(1, attackVar * 50);
+  const socialLearning = Math.min(1, depositVar * 50);
+
+  return selectivity * 0.5 + socialLearning * 0.5;
 }
 
 // --- Utilities ---

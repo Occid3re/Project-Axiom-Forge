@@ -15,22 +15,23 @@
 import { useEffect, useRef } from 'react';
 
 // ── Network constants (must match src/engine/constants.ts) ──────────────────
-const N_IN  = 4;
-const N_HID = 8;
-const N_OUT = 6;
-const W1_SZ = N_IN * N_HID;  // 32 — genome[input * 8 + hidden]
-// W2: genome[32 + hidden * 6 + action]
+const N_IN  = 10;
+const N_HID = 10;
+const N_OUT = 8;
+const W1_SZ = N_IN * N_HID;  // 100 — genome[input * 10 + hidden]
+// W2: genome[100 + hidden * 8 + action]
 
-const INPUT_LABELS  = ['Resource', 'Energy', 'Density', 'Signal'];
-const OUTPUT_LABELS = ['Idle', 'Move', 'Eat', 'Breed', 'Signal', 'Attack'];
-const INPUT_COLORS  = ['#10b981', '#f59e0b', '#a78bfa', '#06b6d4'];
-const OUTPUT_COLORS = ['#6b7280', '#06b6d4', '#10b981', '#ec4899', '#8b5cf6', '#ef4444'];
+const INPUT_LABELS  = ['Resource', 'Energy', 'Density', 'Signal', 'KinNrg', 'Threat', 'KinRatio', 'Glyph', 'Affinity', 'Age'];
+const OUTPUT_LABELS = ['Idle', 'Move', 'Eat', 'Breed', 'Signal', 'Attack', 'Deposit', 'Absorb'];
+const INPUT_COLORS  = ['#10b981', '#f59e0b', '#a78bfa', '#06b6d4', '#34d399', '#ef4444', '#6ee7b7', '#d97706', '#fbbf24', '#9ca3af'];
+const OUTPUT_COLORS = ['#6b7280', '#06b6d4', '#10b981', '#ec4899', '#8b5cf6', '#ef4444', '#d97706', '#0ea5e9'];
 
 const POS_COLOR = '#00e5ff';  // cyan  — positive weights
 const NEG_COLOR = '#ff6600';  // amber — negative weights
 
 // Canonical sample inputs for computing "typical" activations
-const SAMPLE = [0.4, 0.5, 0.25, 0.1]; // [resource, energy, density, signal]
+// [resource, energy, density, signal, kinEnergy, threatDist, kinRatio, glyph, affinity, age]
+const SAMPLE = [0.4, 0.5, 0.25, 0.1, 0.3, 0.2, 0.6, 0.15, 0.5, 0.2];
 
 // ── Particle state (2 per connection × 80 connections = 160) ────────────────
 const TOTAL_CONNS = W1_SZ + N_HID * N_OUT; // 80
@@ -285,7 +286,7 @@ function render(
   ctx.fillText('SENSORY INPUT', LX[0], headY);
 
   ctx.fillStyle = '#7dd3fc';
-  ctx.fillText('HIDDEN ×8', LX[1], headY);
+  ctx.fillText('HIDDEN ×10', LX[1], headY);
 
   ctx.fillStyle = OUTPUT_COLORS[bestAction];
   ctx.shadowBlur  = 6;
@@ -349,8 +350,8 @@ export function NeuralNetView({ genome }: Props) {
       const H = canvas.height;
       if (W < 4 || H < 4) { rafId = requestAnimationFrame(loop); return; }
 
-      if (genome && genome.length >= 80) {
-        const key = genome[0] + genome[40] + genome[79];
+      if (genome && genome.length >= 180) {
+        const key = genome[0] + genome[90] + genome[179];
         if (key !== prevKey.current) {
           prevKey.current = key;
           ptsRef.current  = makeParticleState();

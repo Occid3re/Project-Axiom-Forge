@@ -81,6 +81,8 @@ export function StatsPanel({ snapshot, scores, generation, worldIndex, totalWorl
           <ScoreBar label="Interactions" value={scores.interactions ?? 0} />
           <ScoreBar label="Spatial" value={scores.spatialStructure ?? 0} />
           <ScoreBar label="Dynamics" value={scores.populationDynamics ?? 0} />
+          <ScoreBar label="Stigmergy" value={scores.stigmergicUse ?? 0} />
+          <ScoreBar label="Social" value={scores.socialDifferentiation ?? 0} />
           <div className="mt-2 pt-2 border-t border-gray-700/50">
             <div className="flex justify-between items-center">
               <span className="text-gray-300 text-xs font-semibold">Total Score</span>

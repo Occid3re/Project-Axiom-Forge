@@ -79,6 +79,16 @@ export function WorldLawsView({ laws, title = 'World Laws' }: WorldLawsViewProps
         { label: 'Perception Radius', value: laws.maxPerceptionRadius, max: 6 },
       ],
     },
+    {
+      name: 'Stigmergy',
+      params: [
+        { label: 'Glyph Decay', value: laws.glyphDecay ?? 0.996, max: 1 },
+        { label: 'Deposit Cost', value: laws.depositCost ?? 0.01, max: 0.03 },
+        { label: 'Absorb Cost', value: laws.absorbCost ?? 0.005, max: 0.02 },
+        { label: 'Absorb Rate', value: laws.absorbRate ?? 0.1, max: 0.3 },
+        { label: 'Kin Threshold', value: laws.kinThreshold ?? 0.8, max: 1 },
+      ],
+    },
   ];
 
   return (

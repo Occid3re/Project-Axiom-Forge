@@ -5,7 +5,7 @@
 A **live meta-evolution simulation** deployed at https://lostuplink.com.
 
 The server runs a two-level evolutionary system 24/7:
-- **Inner evolution**: entities with 80-weight Elman recurrent network genomes eat, reproduce, signal, and attack inside a physics world — all behaviour is emergent from the neural network weights + temporal memory
+- **Inner evolution**: entities with 180-weight Elman recurrent network genomes eat, reproduce, signal, attack, deposit, and absorb inside a physics world — all behaviour is emergent from the neural network weights + temporal memory + stigmergic glyph grid
 - **Outer (meta) evolution**: the *laws of physics* themselves evolve across generations to find universes where complex life spontaneously emerges
 
 All visitors see the **same shared simulation** via Socket.IO binary frames. No user input — purely read-only observation. The client renders with WebGL (4-pass bloom pipeline) and includes an X-ray neural-network visualizer.
@@ -71,10 +71,12 @@ Bytes 12-15: entityCount (uint32 LE)
 Bytes 16-19: tick (uint32 LE)
 Bytes 20...: W*H resource bytes (uint8, 0–255)
            + W*H*3 signal bytes (3 channels interleaved per cell)
+           + W*H poison bytes (uint8, 0–255)
+           + W*H glyph bytes (uint8, magnitude of 4-channel glyph vector)
            + entityCount X values        (all sequential)
            + entityCount Y values        (all sequential)
            + entityCount Energy values   (uint8, 0–255)
-           + entityCount Action values   (0–5)
+           + entityCount Action values   (0–7)
            + entityCount Aggression      (W2 ATTACK column mean, sigmoid → 0–255)
            + entityCount SpeciesHue      (W2 SIGNAL + W2 EAT column blend → 0–255)
            + entityCount Complexity      (genome weight std dev, sigmoid → 0–255)
@@ -82,23 +84,23 @@ Bytes 20...: W*H resource bytes (uint8, 0–255)
 ```
 **CRITICAL**: entity arrays are written **sequentially** (all X, then all Y, etc.) not interleaved. The decoder in `protocol.ts` expects this layout. Total: 8 entity arrays per frame.
 
-**Aggression / SpeciesHue / Complexity / Motility derivation from MLP weights** (genome = 80 floats, W2 starts at index 32):
+**Aggression / SpeciesHue / Complexity / Motility derivation from MLP weights** (genome = 180 floats, W2 starts at index 100):
 ```ts
 // ATTACK column (a=5): how strongly this network hunts
-attackSum = sum_h(genome[32 + h*6 + 5]) for h=0..7
+attackSum = sum_h(genome[100 + h*8 + 5]) for h=0..9
 aggression255 = sigmoid(attackSum * 0.4) * 255
 
 // SIGNAL column (a=4) + EAT column (a=2): behaviour fingerprint
-sigTend = sigmoid(sum_h(genome[32 + h*6 + 4]) * 0.3)
-eatTend = sigmoid(sum_h(genome[32 + h*6 + 2]) * 0.3)
+sigTend = sigmoid(sum_h(genome[100 + h*8 + 4]) * 0.3)
+eatTend = sigmoid(sum_h(genome[100 + h*8 + 2]) * 0.3)
 species255 = (sigTend * 0.6 + eatTend * 0.4) * 255
 
 // Complexity: genome weight standard deviation → evolution stage indicator
-std = sqrt(variance(all 80 genome weights))
+std = sqrt(variance(all 180 genome weights))
 complexity255 = sigmoid((std - 1.2) * 2.5) * 255
 
 // Motility: MOVE column (a=1) drive
-moveSum = sum_h(genome[32 + h*6 + 1])
+moveSum = sum_h(genome[100 + h*8 + 1])
 motility255 = sigmoid(moveSum * 0.3) * 255
 ```
 
@@ -115,12 +117,12 @@ server/
   package.json          Only express + socket.io (runtime deps)
 
 src/engine/
-  constants.ts          GENOME_LENGTH=80, NN_INPUTS/HIDDEN/OUTPUTS, ActionType, ResourceDist
+  constants.ts          GENOME_LENGTH=180, NN_INPUTS=10/HIDDEN=10/OUTPUTS=8, ActionType (8 actions), GLYPH_CHANNELS=4
   entity-pool.ts        SoA typed arrays; Xavier init; Gaussian mutation (no [0,1] clamp)
-  world.ts              World.step() — hot loop; decideAction() = MLP forward pass
-  world-laws.ts         WorldLaws interface, PRNG (xoshiro128**), randomLaws/mutateLaws/starterLaws
-  scoring.ts            scoreWorld() — 6 metrics; diversity normalised by √GENOME_LENGTH
-  protocol.ts           decodeFrame(), DecodedFrame, ServerMeta (incl. sampleGenome)
+  world.ts              World.step() — hot loop; decideAction() = MLP forward pass; glyph grid; kin recognition
+  world-laws.ts         WorldLaws interface (38 params), PRNG (xoshiro128**), randomLaws/mutateLaws/starterLaws
+  scoring.ts            scoreWorld() — 12 metrics; diversity normalised by √GENOME_LENGTH
+  protocol.ts           decodeFrame(), DecodedFrame (incl. glyphs), ServerMeta (incl. sampleGenome)
   meta.ts               GenerationResult type used by EmergenceLadder
 
 src/ui/
@@ -172,29 +174,46 @@ deploy.sh                      Full build + SSH tar upload + PM2 restart
 | terrainVariability | 0–1 | Spatial variation in resource capacity |
 | attackTransfer | 0–0.8 | Fraction of victim energy transferred to attacker |
 
-### Entity Genome — Elman Recurrent Network (GENOME_LENGTH = 80)
+### Entity Genome — Elman Recurrent Network (GENOME_LENGTH = 180)
 
-Genome = 80 real-valued float weights (NOT clamped to [0,1]):
+Genome = 180 real-valued float weights (NOT clamped to [0,1]):
 ```
-W1[0..31]:  4 inputs × 8 hidden  — genome[input * 8 + hidden]
-W2[32..79]: 8 hidden × 6 outputs — genome[32 + hidden * 6 + action]
+W1[0..99]:    10 inputs × 10 hidden — genome[input * 10 + hidden]
+W2[100..179]: 10 hidden × 8 outputs — genome[100 + hidden * 8 + action]
+```
+
+**10 sensory inputs** (all normalised to ~[0, 1]):
+```ts
+inputs = [
+  localResource,     // resource at own cell
+  energyNorm,        // own energy / energyCap
+  entityDensity,     // neighbor count / 24 (radius-2)
+  signalStrength,    // mean signal in radius-2
+  nearestKinEnergy,  // energy of closest same-species neighbor (0 if none)
+  nearestThreatDist, // 1/distance to closest non-kin (0 if none)
+  kinRatio,          // same-species / total neighbors (0.5 if alone)
+  glyphStrength,     // magnitude of glyph vector at current cell
+  glyphAffinity,     // dot(own hidden state, local glyph) — cultural similarity
+  ageNorm,           // age / 500 capped at 1.0
+]
 ```
 
 **Forward pass** (every tick, every entity, zero allocation):
 ```ts
-inputs  = [localResource, energyNorm, entityDensity, signalStrength]  // all 0–1
-h_new   = tanh(Σ_k W1[k*8+h] * inputs[k])                            // 8 units
-h_blend = (1-p) * h_new + p * h_prev                                  // p = memoryPersistence
-logits  = Σ_h W2[32 + h*6 + a] * h_blend[h]                           // 6 values
+h_new   = tanh(Σ_k W1[k*10+h] * inputs[k])                              // 10 units
+h_blend = (1-p) * h_new + p * h_prev                                      // p = memoryPersistence
+logits  = Σ_h W2[100 + h*8 + a] * h_blend[h]                              // 8 values
 action  = softmax_sample(logits)
-h_prev  = h_blend                                                      // stored in memory[0..7]
+h_prev  = h_blend                                                          // stored in memory[0..9]
 ```
-Previous hidden state stored in entity memory slots 0–7. This makes each entity an Elman
+Previous hidden state stored in entity memory slots 0–9. This makes each entity an Elman
 recurrent network — it can condition decisions on temporal context (recent threats, resource
-changes, signals). `memoryPersistence` is an evolvable world law: at 0 = purely reactive
-(feedforward MLP), at ~0.5 = half memory/half new input, at 1 = frozen hidden state.
+changes, signals, social encounters). `memoryPersistence` is an evolvable world law.
 
-**Initialization**: Xavier normal — W1 ~ N(0, √(2/4)), W2 ~ N(0, √(2/8))
+**Kin recognition**: cosine similarity of W2 SIGNAL+EAT columns (same 20 weights used for
+species hue visualization). Entities with similarity ≥ `kinThreshold` are considered kin.
+
+**Initialization**: Xavier normal — W1 ~ N(0, √(2/10)), W2 ~ N(0, √(2/10))
 **Mutation**: Gaussian noise `w += N(0, mutationStrength)`, soft-clamped ±6
 **Crossover**: per-weight uniform crossover with nearby mate (if sexualReproduction)
 
@@ -211,6 +230,8 @@ strength = sigmoid(mean(W2[:, 4]) * 0.3)  // SIGNAL column mean
 - **REPRODUCE** (3) — spawn child (+crossover if sexualReproduction)
 - **SIGNAL** (4) — emit on derived channel, strength from W2 SIGNAL column
 - **ATTACK** (5) — target nearest entity; always gives kill bonus (0.45 energy)
+- **DEPOSIT** (6) — write compressed hidden state into glyph grid at current cell (stigmergic memory)
+- **ABSORB** (7) — read glyph at current cell, blend into hidden state (cultural transmission)
 
 ### Corpse Ecology
 Dead entities deposit **50% of their remaining energy** back into the resource grid at their cell.
@@ -239,10 +260,10 @@ Three layered mechanisms force competitive exclusion and prevent species accumul
 
 3. **Local overcrowding** — each entity with >2 neighbors loses `0.04 × (neighbors − 2)` energy/tick.
 
-### Scoring (10 metrics → `scores.total`)
+### Scoring (12 metrics → `scores.total`)
 
 Anti-gaming measures prevent degenerate "monoculture soup" strategies from scoring well.
-Scoring heavily favors ecological richness (interactions 3.5, speciation 3.0) over mere survival (persistence 0.5).
+Scoring heavily favors ecological richness (interactions 3.5, speciation 3.0) and social complexity (socialDifferentiation 3.0, stigmergicUse 2.5) over mere survival (persistence 0.5).
 
 | Metric | Weight | What it rewards | Anti-gaming |
 |---|---|---|---|
@@ -256,6 +277,8 @@ Scoring heavily favors ecological richness (interactions 3.5, speciation 3.0) ov
 | interactions | 3.5 | Ecological richness: attacks + signals per entity, balanced (geometric mean) | Rewards predator-prey arms races, penalizes passive grazer monocultures |
 | spatialStructure | 1.5 | Birth/death rate variance + poison zone activity | Penalizes populations >2000 (uniform monoculture soup penalty) |
 | populationDynamics | 1.5 | Population oscillation (peaks/troughs) + coefficient of variation | Penalizes flat population lines, rewards predator-prey cycles |
+| stigmergicUse | 2.5 | Balanced DEPOSIT+ABSORB glyph usage (geometric mean × balance factor) | One-sided usage (deposit-only or absorb-only) penalized via balance factor |
+| socialDifferentiation | 3.0 | Kin-selective behavior: attack rate variance + deposit rate variance | Rewards worlds where entities behave differently toward kin vs non-kin |
 
 **Anti-monoculture design**: The scoring system is designed to prevent the "fill the screen with one species" trap:
 - spatialStructure penalizes mean population >2000 (subtracts up to 0.5 from score)
@@ -308,9 +331,9 @@ On every new best score and every generation end, saves to `STATE_PATH`:
   "lastImprovementGen": N, "generationSummaries": [...], "population": [...] }
 ```
 Loaded on startup (version check). Survives redeploys because the file is outside `server/`.
-**STATE_VERSION=7** — incremented when scoring semantics or WorldLaws shape change.
+**STATE_VERSION=8** — incremented when scoring semantics or WorldLaws shape change.
 
-### WorldLaws — Full Parameter Table (33 evolvable parameters)
+### WorldLaws — Full Parameter Table (38 evolvable parameters)
 
 | Category | Parameter | Range | Starter | What it does |
 |---|---|---|---|---|
@@ -344,6 +367,11 @@ Loaded on startup (version check). Survives redeploys because the file is outsid
 | | driftSpeed | 0–0.4 | 0.05 | Environmental current strength |
 | Poison | poisonStrength | 0–0.3 | 0.05 | Damage per tick at full concentration |
 | | deathToxin | 0–0.8 | 0.25 | Poison deposited per death |
+| Stigmergy | glyphDecay | 0.990–0.999 | 0.996 | Per-tick glyph persistence (half-life 693–6931 ticks) |
+| | depositCost | 0–0.03 | 0.01 | Energy cost per DEPOSIT action |
+| | absorbCost | 0–0.02 | 0.005 | Energy cost per ABSORB action |
+| | absorbRate | 0–0.3 | 0.1 | How much glyph overwrites hidden state on ABSORB |
+| Social | kinThreshold | 0.6–0.95 | 0.8 | Cosine similarity cutoff for kin recognition |
 | Other | maxPerceptionRadius | 1–6 | 3 | (currently unused) |
 | | maxAge | 200–800 | 300 | Hard lifespan limit |
 | | carryingCapacity | 0.02–0.30 | 0.10 | Sustainable cell fraction |
@@ -361,6 +389,27 @@ Loaded on startup (version check). Survives redeploys because the file is outsid
 - `pressure = clamp((displayStepMs - 33) / 33, 0, 2)`
 - Effects: slower regen, persistent poison, more disasters, higher energy costs
 - Self-regulating feedback loop: heavy populations → slow server → harsh world → culls population
+
+### Stigmergic Memory (Glyph Grid)
+
+**Glyph grid** (`Float32Array[gridSize² × 4]`) — persistent environmental marks enabling cultural transmission:
+- Entities DEPOSIT their compressed hidden state (10→4 channels, sum pairs) into the glyph grid
+- Blend: `glyph = glyph × 0.3 + deposit × 0.7` (new info dominates)
+- Entities ABSORB glyphs by reading the 4-channel vector, expanding to hidden state, and blending
+- Absorb blend: `hidden = hidden × (1 - absorbRate) + expanded_glyph × absorbRate`
+- Decay: `glyphs *= glyphDecay` per tick (0.990–0.999, much slower than signal decay)
+- Rendered as warm gold/amber glow in the microscopy shader
+- **Cultural transmission**: entities deposit learned behavioral representations (hidden state) into the environment. Offspring and strangers can absorb these, creating knowledge transfer across generations without genetic encoding.
+- **glyphAffinity input**: dot product of entity's hidden state with local glyph. High affinity = "someone like me was here" = kin trail following.
+
+### Kin Recognition (Social Perception)
+
+Entities perceive neighbors within radius-2 and classify them as kin or threat:
+- **Similarity metric**: cosine similarity of W2 SIGNAL+EAT columns (same 20 weights that determine species hue)
+- **kinThreshold** (evolvable, 0.6–0.95): cutoff for kin classification
+- **Social inputs**: nearestKinEnergy, nearestThreatDist, kinRatio feed into the MLP
+- **Cooperation is kin-selective**: cooperationBonus only applies to kin neighbors
+- Enables evolved kin-selective behavior: spare kin, attack strangers (or vice versa)
 
 **Drift**: slowly rotating environmental current (`driftSpeed`). Each tick, entities have a probability-based chance of being pushed 1 cell in the current direction. Direction rotates at `tick × 0.003` radians.
 
@@ -503,22 +552,19 @@ Four static HTML files in `public/` served by Express. Contact: Julius Szemellik
 
 ## Improvement Roadmap
 
-### Priority 1 — Simulation depth
+### Completed — Hybrid Social Perception + Stigmergic Memory (v8)
 
-**A. Environmental engineering / niche construction**
-Add a `DEPOSIT` action (ActionType = 6): entity deposits energy into the grid,
-permanently raising resource capacity at that cell. Entities that build "nests"
-support larger colonies. Would boost Resource Cycling and Ecology emergence stages.
+- Expanded neural network: 4→10 inputs, 8→10 hidden, 6→8 outputs (180 weights)
+- Social perception: kin recognition via cosine similarity of W2 behavioral columns
+- 6 new inputs: nearestKinEnergy, nearestThreatDist, kinRatio, glyphStrength, glyphAffinity, ageNorm
+- Stigmergic glyph grid: 4-channel persistent environmental memory (Float32Array)
+- DEPOSIT action: write compressed hidden state into glyph grid
+- ABSORB action: read glyph and blend into hidden state (cultural transmission)
+- 5 new evolvable laws: glyphDecay, depositCost, absorbCost, absorbRate, kinThreshold
+- 2 new scoring metrics: stigmergicUse, socialDifferentiation
+- Gold/amber glyph visualization in microscopy shader
 
-**B. Hebbian memory**
-Memory slots 0–7 are now used for Elman recurrent hidden state. Next step: add memory as
-explicit MLP inputs (expand to 8 inputs: 4 sensory + 4 memory), growing genome to
-8×8+8×6=112 weights. Add Hebbian correlation update for richer internal state beyond
-simple hidden-state persistence.
-
-**C. Directed semantic signaling**
-Have signals carry sender behaviour fingerprint. Receivers that detect matching
-fingerprints cooperate. Seeds semantic communication — signals with meaningful content.
+### Priority 1 — Next steps toward open-ended intelligence
 
 ### Priority 2 — Infrastructure
 
@@ -565,14 +611,15 @@ Static screenshot for social sharing previews. Add `<meta og:image>` to `index.h
 - **Entity limit**: MAX_ENTITIES=4096. Hard reproduction cap at 7% grid cells means the
   entity limit is never reached in practice.
 
-- **Elman memory slots**: Memory slots 0–7 store hidden state for the recurrent network.
+- **Elman memory slots**: Memory slots 0–9 store hidden state for the 10-unit recurrent network.
   `memoryPersistence` world law controls carry-over blend. Newborns (age ≤ 1) get pure reactive
-  state seeded into memory on first tick to avoid dampening.
+  state seeded into memory on first tick to avoid dampening. Slots 0–7 also used by DEPOSIT
+  (compressed to 4 glyph channels) and ABSORB (expanded back from 4 channels).
 
 - **Signal saturation**: signals clamped to uint8 at pack time. Very high signal values
   saturate. Not currently a problem.
 
-- **State file versioning**: STATE_VERSION=4. Increment if SavedState shape or scoring semantics change.
+- **State file versioning**: STATE_VERSION=8. Increment if SavedState shape or scoring semantics change.
 
 - **tsx worker inheritance**: Workers spawned with `new Worker(path)` inherit the tsx ESM
   loader from the parent process (tsx v4.7+). No `execArgv` needed.
@@ -588,8 +635,8 @@ Static screenshot for social sharing previews. Add `<meta og:image>` to `index.h
   Each 1600-step world ≈ 1–4s depending on entity count. ~10–20 worlds/minute effective.
 - Display: 256×256 + ~200 entities at 30fps. ~10ms/step. Well within 33ms budget.
 - Frame size: ~328KB per frame × 30fps ≈ **9.8MB/s per viewer**.
-- `sampleGenome` in meta: 80 floats as JSON ≈ 800 bytes per broadcast. Negligible.
-- NeuralNetView: 80 connections × 2 particles = 160 particles in a Canvas2D RAF loop.
+- `sampleGenome` in meta: 180 floats as JSON ≈ 800 bytes per broadcast. Negligible.
+- NeuralNetView: 180 connections × 2 particles = 360 particles in a Canvas2D RAF loop.
   Zero allocation per frame (pre-allocated Float32Array for particles). ~0.5ms on any device.
 - `serverMs` broadcast: EMA of display world step time, shown in UI as health indicator.
 

@@ -72,6 +72,15 @@ export interface WorldLaws {
 
   // Environment
   driftSpeed: number;       // 0.0–0.4: strength of environmental current pushing entities
+
+  // Stigmergic memory (glyph grid)
+  glyphDecay: number;       // 0.990–0.999: per-tick glyph persistence (half-life 693–6931 ticks)
+  depositCost: number;      // 0.0–0.03: energy cost per DEPOSIT action
+  absorbCost: number;       // 0.0–0.02: energy cost per ABSORB action
+  absorbRate: number;       // 0.0–0.3: how much glyph overwrites hidden state on ABSORB
+
+  // Social perception
+  kinThreshold: number;     // 0.6–0.95: species similarity cutoff for kin recognition
 }
 
 interface FloatRange {
@@ -102,6 +111,11 @@ const FLOAT_RANGES: Record<string, FloatRange> = {
   corpseEnergy: { min: 0.1, max: 1.0 },
   agingRate: { min: 0.0, max: 0.01 },
   driftSpeed: { min: 0.0, max: 0.4 },
+  glyphDecay: { min: 0.990, max: 0.999 },
+  depositCost: { min: 0.0, max: 0.03 },
+  absorbCost: { min: 0.0, max: 0.02 },
+  absorbRate: { min: 0.0, max: 0.3 },
+  kinThreshold: { min: 0.6, max: 0.95 },
 };
 
 const INT_RANGES: Record<string, { min: number; max: number }> = {
@@ -210,6 +224,11 @@ export function randomLaws(rng: PRNG): WorldLaws {
     corpseEnergy: rng.uniform(0.1, 1.0),
     agingRate: rng.uniform(0.0, 0.01),
     driftSpeed: rng.uniform(0.0, 0.4),
+    glyphDecay: rng.uniform(0.990, 0.999),
+    depositCost: rng.uniform(0.0, 0.03),
+    absorbCost: rng.uniform(0.0, 0.02),
+    absorbRate: rng.uniform(0.0, 0.3),
+    kinThreshold: rng.uniform(0.6, 0.95),
   };
 }
 
@@ -276,6 +295,11 @@ export function starterLaws(): WorldLaws {
     corpseEnergy:         0.50,
     agingRate:            0.002,
     driftSpeed:           0.05,
+    glyphDecay:           0.996,
+    depositCost:          0.01,
+    absorbCost:           0.005,
+    absorbRate:           0.1,
+    kinThreshold:         0.8,
   };
 }
 

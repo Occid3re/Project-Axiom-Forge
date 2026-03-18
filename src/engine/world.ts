@@ -1,20 +1,23 @@
 /**
  * World simulation engine.
- * Runs the grid-based world with entities, resources, signals.
+ * Runs the grid-based world with entities, resources, signals, and glyphs.
  * All hot-path operations use typed arrays — no object allocation per tick.
  *
  * Decision making: each entity runs an Elman recurrent network each tick:
- *   inputs  = [localResource, energyNorm, entityDensity, signalStrength]
- *   h_new   = tanh(W1 · inputs)          (8 units, W1 = genome[0..31])
+ *   inputs  = [localResource, energyNorm, entityDensity, signalStrength,
+ *              nearestKinEnergy, nearestThreatDist, kinRatio,
+ *              glyphStrength, glyphAffinity, ageNorm]
+ *   h_new   = tanh(W1 · inputs)                                        (10 units)
  *   h_blend = (1-p) * h_new + p * h_prev (p = memoryPersistence; h_prev from entity memory)
- *   logits  = W2 · h_blend               (6 action logits, W2 = genome[32..79])
+ *   logits  = W2 · h_blend                                             (8 action logits)
  *   action  = softmax_sample(logits)
  *
  * Corpse ecology: dead entities return energy to the resource grid (corpseEnergy law).
+ * Stigmergic memory: entities can DEPOSIT hidden state into a glyph grid and ABSORB it.
  */
 
-import { GENOME_LENGTH, ActionType, ResourceDist, MAX_MEMORY_SIZE,
-         NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE, MAX_ENTITIES } from './constants';
+import { GENOME_LENGTH, ActionType, ResourceDist, MAX_MEMORY_SIZE, GLYPH_CHANNELS,
+         NN_HIDDEN, NN_OUTPUTS, NN_INPUTS, NN_W1_SIZE, MAX_ENTITIES } from './constants';
 import { EntityPool } from './entity-pool';
 import { PRNG } from './world-laws';
 import type { WorldLaws } from './world-laws';
@@ -32,6 +35,8 @@ export interface WorldSnapshot {
   deaths: number;
   attacks: number;
   signals: number;
+  deposits: number;
+  absorbs: number;
   poisonCoverage: number;   // fraction of cells with poison > 0.1
 }
 
@@ -60,6 +65,7 @@ export class World {
   readonly resourceCapacity: Float32Array;
   readonly signals: Float32Array; // [H * W * channels]
   readonly poison: Float32Array;  // [H * W] toxin concentration 0–1
+  readonly glyphs: Float32Array;  // [H * W * GLYPH_CHANNELS] stigmergic memory
   readonly entityMap: Int16Array; // -1 or entity index at each cell
   readonly entities: EntityPool;
 
@@ -69,12 +75,15 @@ export class World {
   serverPressure: number = 0;
 
   // Per-tick counters
-  private tickBirths  = 0;
-  private tickDeaths  = 0;
-  private tickAttacks = 0;
-  private tickSignals = 0;
+  private tickBirths   = 0;
+  private tickDeaths   = 0;
+  private tickAttacks  = 0;
+  private tickSignals  = 0;
+  private tickDeposits = 0;
+  private tickAbsorbs  = 0;
 
   // Pre-allocated MLP scratch buffers — avoids GC pressure in the hot loop
+  private readonly nnInputs = new Float64Array(NN_INPUTS);
   private readonly nnHidden = new Float64Array(NN_HIDDEN);
   private readonly nnLogits = new Float64Array(NN_OUTPUTS);
 
@@ -90,6 +99,7 @@ export class World {
     this.resourceCapacity = new Float32Array(cellCount);
     this.signals          = new Float32Array(cellCount * laws.signalChannels);
     this.poison           = new Float32Array(cellCount);
+    this.glyphs           = new Float32Array(cellCount * GLYPH_CHANNELS);
     this.entityMap        = new Int16Array(cellCount).fill(-1);
     this.entities         = new EntityPool();
 
@@ -146,13 +156,16 @@ export class World {
 
   step(): WorldSnapshot {
     this.tick++;
-    this.tickBirths  = 0;
-    this.tickDeaths  = 0;
-    this.tickAttacks = 0;
-    this.tickSignals = 0;
+    this.tickBirths   = 0;
+    this.tickDeaths   = 0;
+    this.tickAttacks  = 0;
+    this.tickSignals  = 0;
+    this.tickDeposits = 0;
+    this.tickAbsorbs  = 0;
 
     this.decaySignals();
     this.decayPoison();
+    this.decayGlyphs();
     this.regenerateResources();
     this.maybeDisaster();
     this.applyDrift();
@@ -198,6 +211,15 @@ export class World {
     for (let i = 0; i < len; i++) {
       this.poison[i] *= decay;
       if (this.poison[i] < 0.001) this.poison[i] = 0;
+    }
+  }
+
+  private decayGlyphs(): void {
+    const decay = this.laws.glyphDecay ?? 0.996;
+    const len = this.glyphs.length;
+    for (let i = 0; i < len; i++) {
+      this.glyphs[i] *= decay;
+      if (Math.abs(this.glyphs[i]) < 0.001) this.glyphs[i] = 0;
     }
   }
 
@@ -269,6 +291,30 @@ export class World {
     }
   }
 
+  /**
+   * Compute cosine similarity between two entities' behavioral columns (W2 SIGNAL+EAT).
+   * Uses the same 16 weights that determine species hue — entities that look the
+   * same to the renderer also recognize each other as kin.
+   */
+  private genomeSimilarity(i: number, j: number): number {
+    const entities = this.entities;
+    const base = NN_W1_SIZE;
+    let dot = 0, magI = 0, magJ = 0;
+    for (let h = 0; h < NN_HIDDEN; h++) {
+      const si = entities.genomes[i * GENOME_LENGTH + base + h * NN_OUTPUTS + 4]; // SIGNAL col
+      const sj = entities.genomes[j * GENOME_LENGTH + base + h * NN_OUTPUTS + 4];
+      const ei = entities.genomes[i * GENOME_LENGTH + base + h * NN_OUTPUTS + 2]; // EAT col
+      const ej = entities.genomes[j * GENOME_LENGTH + base + h * NN_OUTPUTS + 2];
+      dot  += si * sj + ei * ej;
+      magI += si * si + ei * ei;
+      magJ += sj * sj + ej * ej;
+    }
+    const denom = Math.sqrt(magI * magJ);
+    if (denom < 1e-6) return 0;
+    // Cosine similarity is [-1,1], remap to [0,1]
+    return (dot / denom + 1) * 0.5;
+  }
+
   private processEntities(): void {
     const { entities, rng, laws, gridW, gridH } = this;
     const n = entities.count;
@@ -282,12 +328,11 @@ export class World {
     }
 
     // Carrying-capacity "air" pressure — O(1), applied inline below.
-    // Exponential curve keyed to hard cap of 4096.
-    // Below 1024: negligible.  At 2048: ~½ idleCost.  Above 3500: fatal within seconds.
-    // pressure = min(0.3, 2e-5 × e^(9 × n/4096))
     const MAX_POP     = 4096;
     const ratio       = n / MAX_POP;
     const airPressure = Math.min(0.3, 0.0002 * Math.exp(ratio * 9));
+
+    const kinThresh = laws.kinThreshold ?? 0.8;
 
     for (let oi = 0; oi < n; oi++) {
       const i = order[oi];
@@ -310,34 +355,59 @@ export class World {
         if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
       }
 
-      // Overcrowding vs cooperation — scan neighborhood once
+      // Neighborhood scan: overcrowding, cooperation, AND social perception inputs
       const crowdThresh = laws.crowdingThreshold ?? 3;
       const coopBonus   = laws.cooperationBonus ?? 0;
-      {
-        const cx = entities.x[i], cy = entities.y[i];
-        let nCount = 0;
-        for (let dy0 = -1; dy0 <= 1; dy0++) {
-          for (let dx0 = -1; dx0 <= 1; dx0++) {
-            if (dx0 === 0 && dy0 === 0) continue;
-            const nx0 = ((cx + dx0) % gridW + gridW) % gridW;
-            const ny0 = ((cy + dy0) % gridH + gridH) % gridH;
-            if (this.entityMap[ny0 * gridW + nx0] >= 0) nCount++;
+      const cx = entities.x[i], cy = entities.y[i];
+
+      let nCount = 0;
+      let kinCount = 0;
+      let nearestKinDist = 99, nearestKinEnergy = 0;
+      let nearestThreatDist = 99;
+
+      // Radius-2 scan for social perception (wider than radius-1 cooperation)
+      for (let dy0 = -2; dy0 <= 2; dy0++) {
+        for (let dx0 = -2; dx0 <= 2; dx0++) {
+          if (dx0 === 0 && dy0 === 0) continue;
+          const nx0 = ((cx + dx0) % gridW + gridW) % gridW;
+          const ny0 = ((cy + dy0) % gridH + gridH) % gridH;
+          const ni = this.entityMap[ny0 * gridW + nx0];
+          if (ni < 0) continue;
+
+          const dist = Math.abs(dx0) + Math.abs(dy0); // Manhattan
+          nCount++;
+
+          // Species similarity check
+          const sim = this.genomeSimilarity(i, ni);
+          if (sim >= kinThresh) {
+            kinCount++;
+            if (dist < nearestKinDist) {
+              nearestKinDist = dist;
+              nearestKinEnergy = Math.min(1, entities.energy[ni] / (laws.energyCap ?? 1.5));
+            }
+          } else {
+            if (dist < nearestThreatDist) {
+              nearestThreatDist = dist;
+            }
           }
-        }
-        // Cooperation: energy bonus per neighbor (rewards herding/clustering)
-        if (coopBonus > 0 && nCount > 0) {
-          entities.energy[i] += coopBonus * Math.min(nCount, crowdThresh);
-          const cap = laws.energyCap ?? 1.5;
-          if (entities.energy[i] > cap) entities.energy[i] = cap;
-        }
-        // Overcrowding penalty beyond threshold
-        if (nCount > crowdThresh) {
-          entities.energy[i] -= 0.04 * (nCount - crowdThresh);
-          if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
         }
       }
 
-      const action = this.decideAction(i);
+      // Cooperation: energy bonus per kin neighbor within radius-1
+      if (coopBonus > 0 && kinCount > 0) {
+        entities.energy[i] += coopBonus * Math.min(kinCount, crowdThresh);
+        const cap = laws.energyCap ?? 1.5;
+        if (entities.energy[i] > cap) entities.energy[i] = cap;
+      }
+      // Overcrowding penalty beyond threshold (uses total neighbors)
+      if (nCount > crowdThresh) {
+        entities.energy[i] -= 0.04 * (nCount - crowdThresh);
+        if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
+      }
+
+      // Compute social + stigmergic inputs, then decide action
+      const action = this.decideAction(i, nCount, kinCount, nearestKinEnergy,
+                                        nearestKinDist, nearestThreatDist);
       entities.action[i] = action;
 
       switch (action) {
@@ -346,72 +416,90 @@ export class World {
         case ActionType.REPRODUCE: this.executeReproduce(i); break;
         case ActionType.SIGNAL:    this.executeSignal(i);    break;
         case ActionType.ATTACK:    this.executeAttack(i);    break;
+        case ActionType.DEPOSIT:   this.executeDeposit(i);   break;
+        case ActionType.ABSORB:    this.executeAbsorb(i);    break;
         // IDLE: do nothing
       }
     }
   }
 
   /**
-   * MLP decision: 4 sensory inputs → 8 hidden (tanh) → 6 action logits → softmax sample.
-   * Uses pre-allocated scratch buffers (nnHidden, nnLogits) — zero allocation.
-   *
-   * Genome layout:
-   *   W1: genome[k * NN_HIDDEN + h]              k=0..3, h=0..7  (32 weights)
-   *   W2: genome[NN_W1_SIZE + h * NN_OUTPUTS + a] h=0..7, a=0..5  (48 weights)
+   * MLP decision: 10 sensory inputs → 10 hidden (tanh) → 8 action logits → softmax sample.
+   * Uses pre-allocated scratch buffers (nnInputs, nnHidden, nnLogits) — zero allocation.
    */
-  private decideAction(i: number): ActionType {
-    const { entities, rng, resources, signals, gridW, gridH, laws } = this;
+  private decideAction(
+    i: number,
+    nCount: number, kinCount: number,
+    nearestKinEnergy: number, nearestKinDist: number, nearestThreatDist: number,
+  ): ActionType {
+    const { entities, rng, resources, signals, glyphs, gridW, gridH, laws } = this;
     const genome = entities.getGenome(i);
 
     const ex = entities.x[i];
     const ey = entities.y[i];
 
-    // 4 sensory inputs (all normalised to ~[0, 1])
-    const localResource = resources[ey * gridW + ex];
-    const energyNorm    = Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5));
-
-    let nearbyEntities = 0;
-    let nearbySignal   = 0;
+    // Compute signal strength in radius-2 neighborhood
+    let nearbySignal = 0;
     const radius = 2;
     const area   = (2 * radius + 1) * (2 * radius + 1) - 1; // 24
-
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         if (dx === 0 && dy === 0) continue;
         const nx   = ((ex + dx) % gridW + gridW) % gridW;
         const ny   = ((ey + dy) % gridH + gridH) % gridH;
         const nIdx = ny * gridW + nx;
-        if (this.entityMap[nIdx] >= 0) nearbyEntities++;
         for (let c = 0; c < laws.signalChannels; c++) {
           nearbySignal += signals[nIdx * laws.signalChannels + c];
         }
       }
     }
 
-    const entityDensity  = nearbyEntities / area;
-    const signalStrength = nearbySignal / (area * laws.signalChannels || 1);
+    // 10 sensory inputs (all normalised to ~[0, 1])
+    const inp = this.nnInputs;
+    inp[0] = resources[ey * gridW + ex];                                      // localResource
+    inp[1] = Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5));       // energyNorm
+    inp[2] = nCount / area;                                                    // entityDensity
+    inp[3] = nearbySignal / (area * laws.signalChannels || 1);                 // signalStrength
+    inp[4] = nearestKinDist < 99 ? nearestKinEnergy : 0;                      // nearestKinEnergy
+    inp[5] = nearestThreatDist < 99 ? 1 / nearestThreatDist : 0;             // nearestThreatDist
+    inp[6] = nCount > 0 ? kinCount / nCount : 0.5;                            // kinRatio
+    // Glyph inputs
+    const cellBase = (ey * gridW + ex) * GLYPH_CHANNELS;
+    let glyphMag = 0;
+    for (let c = 0; c < GLYPH_CHANNELS; c++) {
+      const g = glyphs[cellBase + c];
+      glyphMag += g * g;
+    }
+    inp[7] = Math.min(1, Math.sqrt(glyphMag));                                // glyphStrength
+    // glyphAffinity: dot product of compressed hidden state with glyph
+    // Read previous hidden state from memory for affinity comparison
+    let glyphDot = 0;
+    if (glyphMag > 0.001) {
+      const mOff = i * MAX_MEMORY_SIZE;
+      for (let c = 0; c < GLYPH_CHANNELS; c++) {
+        // Compress hidden state same way as deposit: sum pairs
+        const h0 = entities.memory[mOff + c * 2] || 0;
+        const h1 = (c * 2 + 1 < NN_HIDDEN) ? (entities.memory[mOff + c * 2 + 1] || 0) : 0;
+        glyphDot += glyphs[cellBase + c] * (h0 + h1);
+      }
+      const hiddenMag2 = glyphMag; // approximate — use glyph mag as denominator proxy
+      inp[8] = Math.max(-1, Math.min(1, glyphDot / (Math.sqrt(glyphMag) + 1e-6))) * 0.5 + 0.5;
+    } else {
+      inp[8] = 0.5; // neutral when no glyph present
+    }
+    inp[9] = Math.min(1, entities.age[i] / 500);                              // ageNorm
 
-    const i0 = localResource;
-    const i1 = energyNorm;
-    const i2 = entityDensity;
-    const i3 = signalStrength;
-
-    // W1 forward pass: hidden[h] = tanh(Σ_k genome[k * 8 + h] * input[k])
+    // W1 forward pass: hidden[h] = tanh(Σ_k genome[k * NN_HIDDEN + h] * input[k])
     const h = this.nnHidden;
     for (let j = 0; j < NN_HIDDEN; j++) {
-      h[j] = Math.tanh(
-        genome[      j] * i0 +
-        genome[ 8 + j] * i1 +
-        genome[16 + j] * i2 +
-        genome[24 + j] * i3,
-      );
+      let sum = 0;
+      for (let k = 0; k < NN_INPUTS; k++) {
+        sum += genome[k * NN_HIDDEN + j] * inp[k];
+      }
+      h[j] = Math.tanh(sum);
     }
 
     // Recurrent memory: blend new hidden state with previous (Elman network).
-    // memoryPersistence controls how much of the previous hidden state carries over.
-    // At 0 → purely reactive; at 1 → frozen hidden state. Evolved by meta-evolution.
-    // Skip on first tick (age 1) — newborns have zeroed memory, blending would
-    // dampen their first decision and increase infant mortality.
     const persistence = laws.memoryPersistence;
     if (persistence > 0 && entities.age[i] > 1) {
       const mOff = i * MAX_MEMORY_SIZE;
@@ -429,7 +517,7 @@ export class World {
       }
     }
 
-    // W2 forward pass: logits[a] = Σ_h genome[32 + h * 6 + a] * hidden[h]
+    // W2 forward pass: logits[a] = Σ_h genome[NN_W1_SIZE + h * NN_OUTPUTS + a] * hidden[h]
     const logits = this.nnLogits;
     for (let a = 0; a < NN_OUTPUTS; a++) {
       let sum = 0;
@@ -459,7 +547,6 @@ export class World {
     const { entities, laws, gridW, gridH, entityMap, rng } = this;
     const speed = laws.moveSpeed ?? 1;
 
-    // Random direction — the MLP learns WHEN to move; where to go emerges from exploration
     let dx = rng.int(-1, 1);
     let dy = rng.int(-1, 1);
     if (dx === 0 && dy === 0) {
@@ -467,14 +554,13 @@ export class World {
       else                    dy = rng.random() > 0.5 ? 1 : -1;
     }
 
-    // Multi-cell movement: try up to moveSpeed steps in the chosen direction
     const ox = entities.x[i];
     const oy = entities.y[i];
     let finalX = ox, finalY = oy;
     for (let s = 1; s <= speed; s++) {
       const nx = ((ox + dx * s) % gridW + gridW) % gridW;
       const ny = ((oy + dy * s) % gridH + gridH) % gridH;
-      if (entityMap[ny * gridW + nx] >= 0) break; // blocked
+      if (entityMap[ny * gridW + nx] >= 0) break;
       finalX = nx;
       finalY = ny;
     }
@@ -487,7 +573,6 @@ export class World {
       entities.actionDx[i] = dx;
       entities.actionDy[i] = dy;
     }
-    // Faster movement costs more energy
     entities.energy[i] -= laws.moveCost * speed;
   }
 
@@ -561,11 +646,8 @@ export class World {
     const { entities, laws, signals, gridW, gridH } = this;
     const genome = entities.getGenome(i);
 
-    // Channel: derived from first genome weight (evolves freely with selection)
     const channel = Math.floor(Math.abs(genome[0]) * laws.signalChannels) % laws.signalChannels;
 
-    // Strength: mean of W2 SIGNAL column (a=4), sigmoid-mapped — strong signallers
-    // evolve W2 weights that push this output high, making signal strength heritable
     let sigColSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) sigColSum += genome[NN_W1_SIZE + j * NN_OUTPUTS + 4];
     const strength = 1 / (1 + Math.exp(-sigColSum * 0.3));
@@ -584,7 +666,6 @@ export class World {
         signals[(ny * gridW + nx) * laws.signalChannels + channel] += strength * attenuation;
       }
     }
-    // Signaling costs energy — makes it a real strategic trade-off
     const sigCost = laws.signalCost ?? 0;
     if (sigCost > 0) entities.energy[i] -= sigCost;
     this.tickSignals++;
@@ -595,7 +676,6 @@ export class World {
     const ox = entities.x[i];
     const oy = entities.y[i];
 
-    // Target nearest entity within attack range
     const atkRange = laws.attackRange ?? 1;
     let minDist = 99, tdx = 0, tdy = 0;
     for (let dy2 = -atkRange; dy2 <= atkRange; dy2++) {
@@ -624,7 +704,7 @@ export class World {
       entities.energy[target] -= stolen;
 
       if (entities.energy[target] <= 0) {
-        entities.energy[i] += 0.45; // kill bonus — applied before cap
+        entities.energy[i] += 0.45;
         this.killEntity(target);
       }
       entities.energy[i] = Math.min(laws.energyCap ?? 1.5, entities.energy[i]);
@@ -632,19 +712,78 @@ export class World {
     }
   }
 
+  /**
+   * DEPOSIT: Write compressed hidden state into the glyph grid.
+   * Hidden state (10 floats) → 4 glyph channels (sum pairs).
+   * Blend: glyph = glyph × 0.3 + deposit × 0.7 (new info dominates).
+   */
+  private executeDeposit(i: number): void {
+    const { entities, laws, glyphs, gridW } = this;
+    const cost = laws.depositCost ?? 0.01;
+    entities.energy[i] -= cost;
+
+    const cellBase = (entities.y[i] * gridW + entities.x[i]) * GLYPH_CHANNELS;
+    const mOff = i * MAX_MEMORY_SIZE;
+
+    for (let c = 0; c < GLYPH_CHANNELS; c++) {
+      // Compress: sum pairs of hidden units
+      const h0 = entities.memory[mOff + c * 2] || 0;
+      const h1 = (c * 2 + 1 < NN_HIDDEN) ? (entities.memory[mOff + c * 2 + 1] || 0) : 0;
+      const deposit = h0 + h1;
+      glyphs[cellBase + c] = glyphs[cellBase + c] * 0.3 + deposit * 0.7;
+    }
+    this.tickDeposits++;
+  }
+
+  /**
+   * ABSORB: Read glyph at current cell and blend into hidden state.
+   * Glyph (4 channels) → expanded to 10 floats (each channel fills 2–3 hidden slots).
+   * Blend rate controlled by laws.absorbRate.
+   */
+  private executeAbsorb(i: number): void {
+    const { entities, laws, glyphs, gridW } = this;
+    const cost = laws.absorbCost ?? 0.005;
+    entities.energy[i] -= cost;
+
+    const rate = laws.absorbRate ?? 0.1;
+    if (rate <= 0) return;
+
+    const cellBase = (entities.y[i] * gridW + entities.x[i]) * GLYPH_CHANNELS;
+    const mOff = i * MAX_MEMORY_SIZE;
+
+    // Check if there's actually something to absorb
+    let glyphMag = 0;
+    for (let c = 0; c < GLYPH_CHANNELS; c++) {
+      glyphMag += glyphs[cellBase + c] * glyphs[cellBase + c];
+    }
+    if (glyphMag < 0.001) return;
+
+    // Expand glyph channels back to hidden state: reverse of deposit compression
+    for (let c = 0; c < GLYPH_CHANNELS; c++) {
+      const g = glyphs[cellBase + c] * 0.5; // Split back across 2 hidden units
+      const h0idx = c * 2;
+      const h1idx = c * 2 + 1;
+      if (h0idx < NN_HIDDEN) {
+        entities.memory[mOff + h0idx] = entities.memory[mOff + h0idx] * (1 - rate) + g * rate;
+      }
+      if (h1idx < NN_HIDDEN) {
+        entities.memory[mOff + h1idx] = entities.memory[mOff + h1idx] * (1 - rate) + g * rate;
+      }
+    }
+    // Hidden units 8,9 (last pair from 5th channel slot) — leave unchanged since GLYPH_CHANNELS=4
+    this.tickAbsorbs++;
+  }
+
   private killEntity(i: number): void {
     const { entities, entityMap, gridW, resources, resourceCapacity, poison, laws } = this;
     const cellIdx = entities.y[i] * gridW + entities.x[i];
 
-    // Corpse ecology: dead entities return energy to the grid.
     const corpseRatio = laws.corpseEnergy ?? 0.5;
     const deposit = entities.energy[i] * corpseRatio;
     if (deposit > 0) {
       resources[cellIdx] = Math.min(resourceCapacity[cellIdx], resources[cellIdx] + deposit);
     }
 
-    // Death toxin: dying entities release poison into the environment.
-    // Creates hazardous dead zones around battlefields and mass die-offs.
     if (laws.deathToxin > 0) {
       poison[cellIdx] = Math.min(1.0, poison[cellIdx] + laws.deathToxin);
     }
@@ -671,12 +810,11 @@ export class World {
     for (let i = 0; i < n; i++) totalEnergy += entities.energy[i];
 
     // Diversity: mean normalised pairwise genome distance
-    // Divided by sqrt(GENOME_LENGTH) so the metric is scale-invariant across genome sizes
     let diversity  = 0;
     let diversityVariance = 0;
     const sampleSize = Math.min(n, 20);
     let pairs = 0;
-    let distSum2 = 0;  // sum of squared distances for variance
+    let distSum2 = 0;
     for (let a = 0; a < sampleSize; a++) {
       for (let b = a + 1; b < sampleSize; b++) {
         const ga = entities.getGenome(a);
@@ -696,17 +834,14 @@ export class World {
       diversityVariance = distSum2 / pairs - diversity * diversity;
     }
 
-    // Signal activity
     let signalActivity = 0;
     for (let i = 0; i < this.signals.length; i++) signalActivity += this.signals[i];
 
-    // Resource coverage
     let filledCells = 0;
     for (let i = 0; i < this.resources.length; i++) {
       if (this.resources[i] > 0.1) filledCells++;
     }
 
-    // Poison coverage
     let poisonedCells = 0;
     for (let i = 0; i < this.poison.length; i++) {
       if (this.poison[i] > 0.1) poisonedCells++;
@@ -725,6 +860,8 @@ export class World {
       deaths:  this.tickDeaths,
       attacks: this.tickAttacks,
       signals: this.tickSignals,
+      deposits: this.tickDeposits,
+      absorbs:  this.tickAbsorbs,
       poisonCoverage: poisonedCells / this.poison.length,
     };
   }
@@ -734,6 +871,7 @@ export class World {
     resources: Float32Array;
     signals: Float32Array;
     poison: Float32Array;
+    glyphs: Float32Array;
     entityX: Int32Array;
     entityY: Int32Array;
     entityEnergy: Float32Array;
@@ -748,6 +886,7 @@ export class World {
       resources:     this.resources,
       signals:       this.signals,
       poison:        this.poison,
+      glyphs:        this.glyphs,
       entityX:       this.entities.x.subarray(0, this.entities.count),
       entityY:       this.entities.y.subarray(0, this.entities.count),
       entityEnergy:  this.entities.energy.subarray(0, this.entities.count),
