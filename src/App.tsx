@@ -344,7 +344,7 @@ export default function App() {
           </div>
 
           {/* Left sidebar — overlays canvas only, not bottom strip */}
-          <aside className={`absolute left-0 top-0 bottom-0 w-44 lg:w-52 z-10
+          <aside className={`absolute left-0 top-0 bottom-0 w-40 lg:w-48 z-10 overflow-y-auto
                             bg-black/60 backdrop-blur-md border-r border-white/[0.05]
                             ${viewMode === 'network' ? 'hidden' : 'hidden md:flex'}`}>
             <EmergenceLadder emergence={emergence} tick={tick} />

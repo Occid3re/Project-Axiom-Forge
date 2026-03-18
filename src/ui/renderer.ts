@@ -23,6 +23,43 @@ function clamp01(v: number) {
   return Math.max(0, Math.min(1, v));
 }
 
+const RENDER_TUNING = {
+  saturation: 0.72,
+  brightness: 0.88,
+  glowIntensity: 0.42,
+  bloomIntensity: 0.36,
+  highlightContrast: 0.92,
+  maxBrightness: 0.82,
+} as const;
+
+const BIO_PALETTE = {
+  backgroundBase: [0.018, 0.024, 0.028],
+  backgroundNoise: [0.010, 0.012, 0.008],
+  resourceLow: [0.045, 0.090, 0.040],
+  resourceHigh: [0.085, 0.140, 0.070],
+  poisonPrimary: [0.180, 0.055, 0.085],
+  poisonSecondary: [0.080, 0.020, 0.040],
+  glyphPrimary: [0.220, 0.170, 0.090],
+  glyphSecondary: [0.100, 0.075, 0.040],
+  signalA: [0.220, 0.120, 0.090],
+  signalB: [0.120, 0.220, 0.170],
+  signalC: [0.210, 0.160, 0.240],
+  trail: [0.060, 0.110, 0.080],
+  herbivoreA: [0.180, 0.420, 0.400],
+  herbivoreB: [0.340, 0.470, 0.270],
+  predatorA: [0.520, 0.340, 0.180],
+  predatorB: [0.420, 0.280, 0.430],
+  cellShadow: [0.080, 0.100, 0.120],
+} as const;
+
+function glNum(value: number) {
+  return value.toFixed(3);
+}
+
+function glVec3(value: readonly [number, number, number]) {
+  return `vec3(${value.map(glNum).join(', ')})`;
+}
+
 // ── Shaders ──────────────────────────────────────────────────────────────────
 
 const QUAD_VERT = `
@@ -50,6 +87,15 @@ const SCENE_FRAG = `
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
   }
 
+  vec3 applySaturation(vec3 color, float saturation) {
+    float luma = dot(color, vec3(0.299, 0.587, 0.114));
+    return mix(vec3(luma), color, saturation);
+  }
+
+  vec3 softClamp(vec3 color, float maxValue) {
+    return min(color, vec3(maxValue));
+  }
+
   void main() {
     // World UV — zoomed/panned view, tiled with REPEAT wrap
     vec2 wuv = u_pan + (v_uv - 0.5) * u_zoom;
@@ -64,31 +110,31 @@ const SCENE_FRAG = `
     float poison = res.g;  // toxin concentration
     float glyph = res.b;   // stigmergic memory magnitude
 
-    vec3 darkBg = vec3(0.004, 0.006, 0.010);
+    vec3 darkBg = ${glVec3(BIO_PALETTE.backgroundBase)};
     float substrate = hash(wuv * 180.0) * 0.006;
-    darkBg += vec3(substrate * 0.6, substrate * 0.8, substrate * 0.2);
+    darkBg += ${glVec3(BIO_PALETTE.backgroundNoise)} * substrate * 3.0;
 
     float pulse = 0.92 + 0.08 * sin(u_time * 0.4 + wuv.x * 9.0 + wuv.y * 7.0);
-    darkBg += vec3(0.06, 0.13, 0.02) * r * pulse;
-    darkBg += vec3(0.10, 0.20, 0.03) * r * r * 1.4 * pulse;
-    darkBg += vec3(0.018, 0.022, 0.012) * deepZoom;
+    darkBg += ${glVec3(BIO_PALETTE.resourceLow)} * r * pulse;
+    darkBg += ${glVec3(BIO_PALETTE.resourceHigh)} * r * r * 1.15 * pulse;
+    darkBg += vec3(0.010, 0.012, 0.010) * deepZoom;
 
     float poisonPulse = 0.85 + 0.15 * sin(u_time * 1.2 + wuv.x * 13.0 + wuv.y * 11.0);
-    darkBg += vec3(0.45, 0.02, 0.18) * poison * poison * poisonPulse * 0.7;
-    darkBg += vec3(0.20, 0.0, 0.08) * poison * 0.3;
+    darkBg += ${glVec3(BIO_PALETTE.poisonPrimary)} * poison * poison * poisonPulse * 0.45;
+    darkBg += ${glVec3(BIO_PALETTE.poisonSecondary)} * poison * 0.22;
 
     float glyphPulse = 0.90 + 0.10 * sin(u_time * 0.8 + wuv.x * 7.0 + wuv.y * 5.0);
-    darkBg += vec3(0.55, 0.35, 0.05) * glyph * glyph * glyphPulse * 0.6;
-    darkBg += vec3(0.25, 0.15, 0.02) * glyph * 0.3;
+    darkBg += ${glVec3(BIO_PALETTE.glyphPrimary)} * glyph * glyph * glyphPulse * 0.34;
+    darkBg += ${glVec3(BIO_PALETTE.glyphSecondary)} * glyph * 0.18;
 
     float sigR = sig.r * sig.r;
     float sigG = sig.g * sig.g;
     float sigB = sig.b * sig.b;
     float fieldFade = 1.0 - deepZoom * 0.72;
-    darkBg += vec3(0.85, 0.08, 0.10) * sigR * 0.5 * fieldFade;
-    darkBg += vec3(0.02, 0.65, 0.50) * sigG * 0.45 * fieldFade;
-    darkBg += vec3(0.60, 0.06, 0.80) * sigB * 0.40 * fieldFade;
-    darkBg += vec3(0.02, 0.03, 0.015) * deepZoom * (sigR + sigG + sigB) * 0.2;
+    darkBg += ${glVec3(BIO_PALETTE.signalA)} * sigR * 0.22 * fieldFade;
+    darkBg += ${glVec3(BIO_PALETTE.signalB)} * sigG * 0.24 * fieldFade;
+    darkBg += ${glVec3(BIO_PALETTE.signalC)} * sigB * 0.18 * fieldFade;
+    darkBg += vec3(0.010, 0.012, 0.014) * deepZoom * (sigR + sigG + sigB) * 0.12;
 
     float slideMask = smoothstep(0.02, 0.12, v_uv.x) * smoothstep(0.02, 0.12, v_uv.y)
       * smoothstep(0.02, 0.12, 1.0 - v_uv.x) * smoothstep(0.02, 0.12, 1.0 - v_uv.y);
@@ -117,28 +163,31 @@ const SCENE_FRAG = `
       float role     = ent.b;
 
       // Biological color palette
-      vec3 c00 = vec3(0.04, 0.68, 0.88);  // cyan-teal    (herbivore A)
-      vec3 c01 = vec3(0.12, 0.88, 0.32);  // lime-green   (herbivore B)
-      vec3 c10 = vec3(0.96, 0.42, 0.06);  // orange       (predator A)
-      vec3 c11 = vec3(0.72, 0.06, 0.84);  // violet       (predator B)
+      vec3 c00 = ${glVec3(BIO_PALETTE.herbivoreA)};
+      vec3 c01 = ${glVec3(BIO_PALETTE.herbivoreB)};
+      vec3 c10 = ${glVec3(BIO_PALETTE.predatorA)};
+      vec3 c11 = ${glVec3(BIO_PALETTE.predatorB)};
       vec3 cellCol = mix(mix(c00, c01, speciesH), mix(c10, c11, speciesH), role);
 
-      vec3 brightCell = mix(vec3(0.14, 0.18, 0.22), cellCol * 0.85 + vec3(0.02), 0.72);
-      float body = presence * (1.0 - ringInt) * mix(0.12, 0.30, u_specimen) * (1.0 + deepZoom * 0.12);
-      float membrane = ringInt * mix(1.5, 1.05, u_specimen) * (1.0 + deepZoom * 0.18);
+      vec3 brightCell = mix(${glVec3(BIO_PALETTE.cellShadow)}, cellCol * 0.82 + vec3(0.015), 0.62);
+      float body = presence * (1.0 - ringInt) * mix(0.10, 0.24, u_specimen) * (1.0 + deepZoom * 0.08);
+      float membrane = ringInt * mix(1.18, 0.96, u_specimen) * (1.0 + deepZoom * 0.10);
       color += mix(cellCol, brightCell, u_specimen) * (body + membrane);
 
       float specimenShadow = presence * (0.18 + ringInt * 0.12);
       color -= vec3(specimenShadow * 0.28 * u_specimen);
 
       float halo = presence * (1.0 - presence) * 4.0;
-      color += mix(cellCol * halo * (0.40 + deepZoom * 0.12), brightCell * halo * 0.06, u_specimen);
+      color += mix(cellCol * halo * (0.18 + deepZoom * 0.06), brightCell * halo * 0.035, u_specimen) * ${glNum(RENDER_TUNING.glowIntensity)};
     }
 
-    color += vec3(0.01, 0.16, 0.05) * trail.r * 0.24 * (1.0 - u_specimen) * fieldFade;
+    color += ${glVec3(BIO_PALETTE.trail)} * trail.r * 0.12 * (1.0 - u_specimen) * fieldFade;
 
     float grain = (hash(v_uv * 900.0 + u_time * 4.7) - 0.5) * 0.022;
     color += grain * mix(1.0, 0.35, u_specimen);
+    color = applySaturation(color, ${glNum(RENDER_TUNING.saturation)});
+    color *= ${glNum(RENDER_TUNING.brightness)};
+    color = softClamp(color, ${glNum(RENDER_TUNING.maxBrightness)});
 
     float scaleBarMask =
       step(0.12, v_uv.x) * step(v_uv.x, 0.34) *
@@ -202,17 +251,18 @@ const COMP_FRAG = `
     vec3 sceneE = texture2D(u_scene, d_uv + vec2(u_sceneTexel.x, 0.0)).rgb;
     vec3 sceneW = texture2D(u_scene, d_uv - vec2(u_sceneTexel.x, 0.0)).rgb;
     vec3 sceneBlur = (sceneN + sceneS + sceneE + sceneW) * 0.25;
-    vec3 sharpenedScene = max(scene + (scene - sceneBlur) * 0.28, vec3(0.0));
+    vec3 sharpenedScene = max(scene + (scene - sceneBlur) * 0.18, vec3(0.0));
 
     vec3 bloom;
     bloom.r = texture2D(u_bloom, d_uv + caOff * 0.4).r;
     bloom.g = texture2D(u_bloom, d_uv).g;
     bloom.b = texture2D(u_bloom, d_uv - caOff * 0.4).b;
 
-    vec3 screenColor = 1.0 - (1.0 - sharpenedScene) * (1.0 - bloom * 0.65);
-    vec3 specimenColor = sharpenedScene + bloom * 0.18;
+    vec3 screenColor = 1.0 - (1.0 - sharpenedScene) * (1.0 - bloom * ${glNum(RENDER_TUNING.bloomIntensity)});
+    vec3 specimenColor = sharpenedScene + bloom * 0.12;
     vec3 color = mix(screenColor, specimenColor, u_specimen);
-    color = pow(max(color, vec3(0.0)), mix(vec3(0.90), vec3(1.02), u_specimen));
+    color = pow(max(color, vec3(0.0)), mix(vec3(${glNum(RENDER_TUNING.highlightContrast)}), vec3(1.01), u_specimen));
+    color = min(color, vec3(${glNum(RENDER_TUNING.maxBrightness)}));
 
     gl_FragColor = vec4(color * u_fade, 1.0);
   }
@@ -227,7 +277,8 @@ const BLIT_FRAG = `
   uniform float u_specimen;
   void main() {
     vec3 c = texture2D(u_src, v_uv).rgb;
-    c = pow(max(c, vec3(0.0)), mix(vec3(0.90), vec3(1.02), u_specimen));
+    c = pow(max(c, vec3(0.0)), mix(vec3(${glNum(RENDER_TUNING.highlightContrast)}), vec3(1.01), u_specimen));
+    c = min(c, vec3(${glNum(RENDER_TUNING.maxBrightness)}));
     gl_FragColor = vec4(c * u_fade, 1.0);
   }
 `;

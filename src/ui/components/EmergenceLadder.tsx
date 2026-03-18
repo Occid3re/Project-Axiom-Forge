@@ -98,16 +98,16 @@ export function EmergenceLadder({ emergence, tick }: EmergenceLadderProps) {
   const pulse = Math.sin(tick * 0.05) * 0.3 + 0.7;
 
   return (
-    <div className="flex flex-col h-full py-6 px-2">
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto py-4 px-2">
       {/* Title */}
-      <div className="text-center mb-6">
+      <div className="text-center mb-4 shrink-0">
         <h2 className="text-[10px] uppercase tracking-[0.25em] text-gray-500 font-medium">
           Emergence
         </h2>
       </div>
 
       {/* Stages — bottom to top */}
-      <div className="flex flex-col-reverse gap-1 flex-1 justify-center">
+      <div className="flex min-h-0 flex-col-reverse gap-0.5 flex-1 justify-start">
         {STAGES.map((stage, i) => {
           const achieved = i <= emergence.stage;
           const current = i === emergence.stage;
@@ -117,7 +117,7 @@ export function EmergenceLadder({ emergence, tick }: EmergenceLadderProps) {
           return (
             <div
               key={i}
-              className="group relative flex items-center gap-3 py-2 px-3 rounded-lg transition-all duration-700"
+              className="group relative flex items-center gap-2 py-1.5 px-2 rounded-lg transition-all duration-700"
               style={{
                 background: achieved
                   ? `linear-gradient(90deg, ${stage.glowColor}, transparent)`
@@ -130,7 +130,7 @@ export function EmergenceLadder({ emergence, tick }: EmergenceLadderProps) {
               {/* Connector line */}
               {i < 9 && (
                 <div
-                  className="absolute left-[22px] -top-1 w-px h-1"
+                  className="absolute left-[18px] -top-0.5 w-px h-0.5"
                   style={{
                     background: achieved
                       ? stage.color
@@ -141,7 +141,7 @@ export function EmergenceLadder({ emergence, tick }: EmergenceLadderProps) {
 
               {/* Icon */}
               <div
-                className="w-7 h-7 flex items-center justify-center text-sm shrink-0 rounded-md transition-all duration-500"
+                className="w-6 h-6 flex items-center justify-center text-xs shrink-0 rounded-md transition-all duration-500"
                 style={{
                   color: achieved ? stage.color : '#374151',
                   textShadow: current
@@ -161,7 +161,7 @@ export function EmergenceLadder({ emergence, tick }: EmergenceLadderProps) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span
-                    className="text-xs font-semibold truncate transition-colors duration-500"
+                    className="text-[11px] font-semibold truncate transition-colors duration-500"
                     style={{ color: achieved ? stage.color : '#4b5563' }}
                   >
                     {stage.name}
@@ -180,7 +180,7 @@ export function EmergenceLadder({ emergence, tick }: EmergenceLadderProps) {
                   )}
                 </div>
                 <p
-                  className="text-[9px] truncate transition-colors duration-500"
+                  className="text-[8px] truncate transition-colors duration-500"
                   style={{ color: achieved ? '#9ca3af' : '#1f2937' }}
                 >
                   {stage.subtitle}
