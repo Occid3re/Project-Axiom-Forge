@@ -42,38 +42,38 @@ interface SavedState {
 
 const EVAL_CONFIG = {
   gridSize:            64,
-  worldSteps:        1600,   // doubled: more entity generations per eval
-  initialEntities:     45,
-  worldsPerGeneration: 12,   // slightly more candidates for exploration
-  topK:                 3,   // 3 survivors for more genetic diversity
+  worldSteps:        2400,   // 180-weight NN needs more ticks for complex behaviours to manifest
+  initialEntities:     50,   // slightly denser: better resource cycling signal in eval
+  worldsPerGeneration: 12,
+  topK:                 3,
   mutationStrength:  0.08,
   scoreWeights: {
-    persistence:      0.5,   // halved: survival is necessary but shouldn't dominate
-    diversity:        1.5,   // increased: genome divergence is key to interesting worlds
-    complexityGrowth: 1.0,   // slight decrease
-    communication:    2.0,   // keep: lagged correlation is already hard
-    envStructure:     0.5,   // halved: too easy to max out
-    adaptability:     1.0,   // reduced: stop rewarding static populations
-    speciation:       3.0,   // doubled: we WANT visible species
-    interactions:     3.5,   // big increase: predator-prey is what makes watching fun
-    spatialStructure: 1.5,   // reward clustering/territories, penalize uniform soup
-    populationDynamics: 1.5, // reward oscillation, penalize flat population lines
-    stigmergicUse: 2.5,     // reward balanced deposit/absorb glyph usage
-    socialDifferentiation: 3.0, // reward kin-selective behavior
+    persistence:      0.5,   // survival is necessary but shouldn't dominate
+    diversity:        1.5,   // genome divergence is key to interesting worlds
+    complexityGrowth: 1.0,
+    communication:    2.0,   // lagged correlation is already hard to fake
+    envStructure:     0.5,   // variance of resource coverage over time
+    adaptability:     1.0,
+    speciation:       3.0,   // we WANT visible species clusters
+    interactions:     3.5,   // predator-prey makes watching fun
+    spatialStructure: 1.5,   // reward territories / clustering
+    populationDynamics: 1.5, // reward oscillation, penalize flat lines
+    stigmergicUse:    2.5,   // reward balanced deposit/absorb
+    socialDifferentiation: 3.0, // reward kin-selective behaviour
   },
   // Escalating stagnation tiers
   stagnationMild:           30,   // 25% random, 2× mutation
   stagnationAggressive:    100,   // 50% random, 4× mutation
-  stagnationReset:         200,   // full population reset from scratch
+  stagnationReset:         150,   // full reset sooner — score plateau is deep
   stagnationRandomFraction: 0.25,
-  minImprovementRatio:      0.01,
-  cpuTargetMs:              0.8,
-  cpuPenaltyWeight:         0.6,
+  minImprovementRatio:    0.005,  // count smaller improvements as real progress
+  cpuTargetMs:              2.0,  // 180-weight NN is ~2.5× heavier than old 72-weight
+  cpuPenaltyWeight:         0.3,  // softer penalty — don't kill interesting complex worlds
 };
 
 const DISPLAY_CONFIG = {
   gridSize:        256,
-  initialEntities: 180,
+  initialEntities: 400,  // fix density mismatch: eval is 50/(64²)=0.012; 400/(256²)=0.006 ≈ half
   minLifetimeTicks: 240,
 };
 
