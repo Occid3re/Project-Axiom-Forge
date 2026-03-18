@@ -14,11 +14,11 @@ import { World, type WorldHistory } from '../src/engine/world.ts';
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
 import type { WorldLaws } from '../src/engine/world-laws.ts';
 
-const DEFAULT_EVAL_STEPS    = 1600;
+const DEFAULT_EVAL_STEPS    = 3200;
 const GRID_SIZE             = 64;
-const INITIAL_ENTITIES      = 45;
-const CPU_TARGET_MS         = 0.8;
-const CPU_PENALTY_W         = 0.6;
+const INITIAL_ENTITIES      = 50;
+const CPU_TARGET_MS         = 6.0;  // 270-weight NN is expensive; allow rich worlds to run
+const CPU_PENALTY_W         = 0.05; // minimal penalty — complex worlds should not be selected against
 
 const DEFAULT_SCORE_WEIGHTS = {
   persistence:           0.5,
