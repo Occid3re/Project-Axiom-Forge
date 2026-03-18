@@ -76,6 +76,7 @@ const DISPLAY_CONFIG = {
   initialEntities: 400,  // fix density mismatch: eval is 50/(64²)=0.012; 400/(256²)=0.006 ≈ half
   minLifetimeTicks: 240,
   fieldFrameInterval: 6, // 30fps entities, 5fps field refresh
+  fieldDownsample: 2,
 };
 
 // ── Worker pool ──────────────────────────────────────────────────────────────
@@ -134,10 +135,14 @@ class WorkerPool {
 
 export function packFieldFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
-  const { gridW: W, gridH: H, entityCount, signalChannels } = vs;
+  const { gridW: W, gridH: H, signalChannels } = vs;
   const channels   = Math.min(signalChannels, 3);
+  const step = DISPLAY_CONFIG.fieldDownsample;
+  const outW = Math.max(1, Math.floor(W / step));
+  const outH = Math.max(1, Math.floor(H / step));
+  const outCells = outW * outH;
   // Layout: header(20) + resources(WH) + signals(WH×3) + poison(WH) + glyphs(WH) + entities(N×8)
-  const totalBytes = 20 + W * H + W * H * 3 + W * H + W * H;
+  const totalBytes = 20 + outCells + outCells * 3 + outCells + outCells;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
@@ -146,83 +151,73 @@ export function packFieldFrame(world: World, tick: number): ArrayBuffer {
   view.setUint32(0,  0x41584646, true); // magic "AXFF"
   view.setUint32(4,  W,    true);
   view.setUint32(8,  H,    true);
-  view.setUint32(12, entityCount, true);
+  view.setUint32(12, step, true);
   view.setUint32(16, tick,  true);
 
   let offset = 20;
-  for (let i = 0; i < W * H; i++) u8[offset++] = (vs.resources[i] * 255) | 0;
-  for (let i = 0; i < W * H; i++) {
-    for (let c = 0; c < 3; c++) {
-      u8[offset++] = c < channels
-        ? Math.min(255, (vs.signals[i * signalChannels + c] * 255) | 0)
-        : 0;
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      let sum = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = oy * step + dy;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = ox * step + dx;
+          sum += vs.resources[sy * W + sx];
+        }
+      }
+      u8[offset++] = Math.min(255, ((sum / (step * step)) * 255) | 0);
     }
   }
-  // Poison grid
-  for (let i = 0; i < W * H; i++) u8[offset++] = Math.min(255, (vs.poison[i] * 255) | 0);
-  // Glyph grid: encode magnitude of 4-channel glyph vector as uint8
-  for (let i = 0; i < W * H; i++) {
-    let mag = 0;
-    const base = i * GLYPH_CHANNELS;
-    for (let c = 0; c < GLYPH_CHANNELS; c++) {
-      mag += vs.glyphs[base + c] * vs.glyphs[base + c];
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      for (let c = 0; c < 3; c++) {
+        if (c >= channels) {
+          u8[offset++] = 0;
+          continue;
+        }
+        let sum = 0;
+        for (let dy = 0; dy < step; dy++) {
+          const sy = oy * step + dy;
+          for (let dx = 0; dx < step; dx++) {
+            const sx = ox * step + dx;
+            sum += vs.signals[(sy * W + sx) * signalChannels + c];
+          }
+        }
+        u8[offset++] = Math.min(255, ((sum / (step * step)) * 255) | 0);
+      }
     }
-    u8[offset++] = Math.min(255, (Math.sqrt(mag) * 128) | 0);
   }
-  return buf;
-  // X, Y, Energy, Action arrays
-  for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityX[e] & 0xff;
-  for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityY[e] & 0xff;
-  for (let e = 0; e < entityCount; e++) u8[offset++] = Math.min(255, (vs.entityEnergy[e] * 255) | 0);
-  for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityAction[e];
-
-  // Aggression byte: mean of W2 ATTACK column (a=8), sigmoid → hunt tendency
-  for (let e = 0; e < entityCount; e++) {
-    let attackSum = 0;
-    for (let j = 0; j < NN_HIDDEN; j++) {
-      attackSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 8];
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      let sum = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = oy * step + dy;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = ox * step + dx;
+          sum += vs.poison[sy * W + sx];
+        }
+      }
+      u8[offset++] = Math.min(255, ((sum / (step * step)) * 255) | 0);
     }
-    u8[offset++] = Math.round(255 / (1 + Math.exp(-attackSum * 0.4)));
   }
-
-  // Species hue byte: W2 SIGNAL column (a=7) + W2 EAT column (a=5) → behaviour fingerprint
-  for (let e = 0; e < entityCount; e++) {
-    let sigSum = 0, eatSum = 0;
-    for (let j = 0; j < NN_HIDDEN; j++) {
-      sigSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 7]; // SIGNAL=7
-      eatSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 5]; // EAT=5
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      let sum = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = oy * step + dy;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = ox * step + dx;
+          let mag = 0;
+          const base = (sy * W + sx) * GLYPH_CHANNELS;
+          for (let c = 0; c < GLYPH_CHANNELS; c++) {
+            mag += vs.glyphs[base + c] * vs.glyphs[base + c];
+          }
+          sum += Math.sqrt(mag);
+        }
+      }
+      u8[offset++] = Math.min(255, ((sum / (step * step)) * 128) | 0);
     }
-    const sigTend = 1 / (1 + Math.exp(-sigSum * 0.3));
-    const eatTend = 1 / (1 + Math.exp(-eatSum * 0.3));
-    u8[offset++] = Math.round((sigTend * 0.6 + eatTend * 0.4) * 255);
   }
-
-  // Genome complexity byte: standard deviation of all genome weights → 0-255
-  for (let e = 0; e < entityCount; e++) {
-    const gOff = e * GENOME_LENGTH;
-    let sum = 0, sum2 = 0;
-    for (let g = 0; g < GENOME_LENGTH; g++) {
-      const w = vs.entityGenomes[gOff + g];
-      sum += w; sum2 += w * w;
-    }
-    const mean = sum / GENOME_LENGTH;
-    const variance = sum2 / GENOME_LENGTH - mean * mean;
-    const std = Math.sqrt(Math.max(0, variance));
-    u8[offset++] = Math.round(255 / (1 + Math.exp(-(std - 1.2) * 2.5)));
-  }
-
-  // Motility byte: mean of all 4 MOVE columns (MOVE_N=1..MOVE_W=4), sigmoid → movement drive
-  for (let e = 0; e < entityCount; e++) {
-    let moveSum = 0;
-    for (let j = 0; j < NN_HIDDEN; j++) {
-      moveSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 1] // MOVE_N
-               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 2] // MOVE_E
-               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 3] // MOVE_S
-               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 4]; // MOVE_W
-    }
-    u8[offset++] = Math.round(255 / (1 + Math.exp(-moveSum * 0.075))); // /4 absorbed into scale
-  }
-
   return buf;
 }
 

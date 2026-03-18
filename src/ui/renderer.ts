@@ -358,7 +358,6 @@ export class WorldRenderer {
 
   /** Upload new simulation data to GPU textures. */
   private updateFrame(f: CombinedFrame) {
-    const { gl } = this;
     const { gridW: W, gridH: H, entityCount } = f;
     const cells = W * H;
 
@@ -515,7 +514,7 @@ export class WorldRenderer {
 
           // Rotated + elongated local coordinates
           let ldx = dx * cosA + dy * sinA;
-          let ldy = (-dx * sinA + dy * cosA) * planAspect;
+          const ldy = (-dx * sinA + dy * cosA) * planAspect;
           let rr: number;
 
           if (plan === 2) {

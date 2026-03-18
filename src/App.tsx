@@ -14,7 +14,8 @@ import {
   type ServerMeta,
 } from './engine/protocol';
 import { WorldView } from './ui/components/WorldView';
-import { EmergenceLadder, detectEmergence, type EmergenceState } from './ui/components/EmergenceLadder';
+import { EmergenceLadder } from './ui/components/EmergenceLadder';
+import { detectEmergence, type EmergenceState } from './ui/components/emergence';
 import { TransmissionLog } from './ui/components/TransmissionLog';
 import { PopulationChart } from './ui/components/PopulationChart';
 import { WorldLawsView } from './ui/components/WorldLawsView';
@@ -22,7 +23,11 @@ import { NeuralNetView } from './ui/components/NeuralNetView';
 
 // ---- Types -----------------------------------------------------------------
 
-interface Snapshot { population: number; diversity?: number; signalActivity?: number; }
+interface Snapshot {
+  population: number;
+  diversity: number;
+  signalActivity: number;
+}
 
 const STAGE_NAMES = [
   'Survival',
@@ -121,12 +126,13 @@ export default function App() {
   // (new best found, extinction reseed, or periodic 9000-tick refresh)
   useEffect(() => {
     const seed = meta?.displaySeed ?? -1;
-    if (seed !== -1 && seed !== prevDisplaySeedRef.current && prevDisplaySeedRef.current !== -1) {
+    const previousSeed = prevDisplaySeedRef.current;
+    prevDisplaySeedRef.current = seed;
+    if (seed !== -1 && seed !== previousSeed && previousSeed !== -1) {
       setBestWorldPulse(true);
       const t = setTimeout(() => setBestWorldPulse(false), 2000);
       return () => clearTimeout(t);
     }
-    prevDisplaySeedRef.current = seed;
   }, [meta?.displaySeed]);
 
   // Detect emergence from latest scores
@@ -137,7 +143,7 @@ export default function App() {
       generation: g.gen, worlds: [], bestScore: g.best, bestLawsId: '', avgScore: g.avg,
     }));
     setEmergence(detectEmergence(scores, genResults));
-  }, [meta?.scores]);
+  }, [meta?.generations, meta?.scores]);
 
   // Accumulate snapshots for chart
   useEffect(() => {
@@ -338,7 +344,7 @@ export default function App() {
             {/* Chart */}
             <div className="p-3 border-b border-white/[0.04] shrink-0">
               <h4 className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-2">Population</h4>
-              <PopulationChart snapshots={snapshots as any} width={200} height={80} />
+              <PopulationChart snapshots={snapshots} width={200} height={80} />
             </div>
 
             {/* Score bars */}

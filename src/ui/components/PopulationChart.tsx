@@ -3,10 +3,14 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type { WorldSnapshot } from '../../engine';
+interface ChartSnapshot {
+  population: number;
+  diversity: number;
+  signalActivity: number;
+}
 
 interface PopulationChartProps {
-  snapshots: WorldSnapshot[];
+  snapshots: ChartSnapshot[];
   width?: number;
   height?: number;
 }
@@ -53,7 +57,8 @@ export function PopulationChart({ snapshots, width = 220, height = 90 }: Populat
     for (let i = 0; i < n; i++) {
       const x = i * xStep;
       const y = height - (snapshots[i].population / maxPop) * height;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
     ctx.lineTo((n - 1) * xStep, height);
     ctx.closePath();
@@ -89,8 +94,8 @@ export function PopulationChart({ snapshots, width = 220, height = 90 }: Populat
 
 function drawLine(
   ctx: CanvasRenderingContext2D,
-  snaps: WorldSnapshot[],
-  fn: (s: WorldSnapshot) => number,
+  snaps: ChartSnapshot[],
+  fn: (s: ChartSnapshot) => number,
   n: number,
   xStep: number,
   h: number,
@@ -103,7 +108,8 @@ function drawLine(
   for (let i = 0; i < n; i++) {
     const x = i * xStep;
     const y = h - fn(snaps[i]) * h;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
   }
   ctx.stroke();
 }

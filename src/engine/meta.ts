@@ -5,7 +5,7 @@
  */
 
 import { World, type WorldConfig, type WorldHistory } from './world';
-import { type WorldLaws, randomLaws, mutateLaws, crossoverLaws, PRNG } from './world-laws';
+import { type WorldLaws, randomLaws, mutateLaws, PRNG } from './world-laws';
 import { scoreWorld, type WorldScores } from './scoring';
 
 export interface WorldResult {

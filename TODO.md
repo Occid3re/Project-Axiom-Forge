@@ -12,12 +12,15 @@
   - the client reads and shows the displayed world's laws instead of the all-time best
 - Activate `carryingCapacity` in the population-pressure curve and expose it in the laws UI.
 - Update the emergence/UI copy so the communication metric is described as glyph-based rather than signal-based.
+- Reduce field bandwidth further by downsampling field frames on the wire and expanding them client-side before render.
+- Add gzip for static assets in nginx.
+- Restore a working ESLint 9 setup with a flat config and clean `npm run lint`.
 
 ## Next
 
-- Reduce field bandwidth further with tile deltas and/or downsampled field frames instead of full-grid refreshes.
-- Add proper gzip or brotli for static assets in nginx.
-- Restore a working lint setup for ESLint 9 by adding a flat `eslint.config.*`.
+- Reduce field bandwidth further with tile-delta field packets and periodic keyframes instead of full downsampled refreshes.
+- Consider brotli in nginx in addition to gzip if the VPS package set supports it.
+- Revisit score and stage thresholds after the transport, kin-selection, and carrying-capacity changes to ensure the UI still reflects real emergence progress.
 
 ## Review Backlog
 

@@ -3,7 +3,7 @@
  */
 
 import { useMemo } from 'react';
-import type { GenerationResult, WorldResult } from '../../engine';
+import type { GenerationResult } from '../../engine';
 
 interface LineageTreeProps {
   generations: GenerationResult[];

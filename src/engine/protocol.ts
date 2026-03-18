@@ -31,6 +31,62 @@ export interface DecodedFieldFrame {
 const ENTITY_MAGIC = 0x41584645; // "AXFE"
 const FIELD_MAGIC  = 0x41584646; // "AXFF"
 
+function expandScalarField(
+  source: Uint8Array,
+  gridW: number,
+  gridH: number,
+  step: number,
+): Uint8Array {
+  const out = new Uint8Array(gridW * gridH);
+  const srcW = Math.max(1, Math.floor(gridW / step));
+  const srcH = Math.max(1, Math.floor(gridH / step));
+
+  for (let sy = 0; sy < srcH; sy++) {
+    for (let sx = 0; sx < srcW; sx++) {
+      const value = source[sy * srcW + sx];
+      const startY = sy * step;
+      const startX = sx * step;
+      for (let dy = 0; dy < step && startY + dy < gridH; dy++) {
+        const row = (startY + dy) * gridW;
+        for (let dx = 0; dx < step && startX + dx < gridW; dx++) {
+          out[row + startX + dx] = value;
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
+function expandSignalField(
+  source: Uint8Array,
+  gridW: number,
+  gridH: number,
+  step: number,
+): Uint8Array {
+  const out = new Uint8Array(gridW * gridH * 3);
+  const srcW = Math.max(1, Math.floor(gridW / step));
+  const srcH = Math.max(1, Math.floor(gridH / step));
+
+  for (let sy = 0; sy < srcH; sy++) {
+    for (let sx = 0; sx < srcW; sx++) {
+      const srcBase = (sy * srcW + sx) * 3;
+      const startY = sy * step;
+      const startX = sx * step;
+      for (let dy = 0; dy < step && startY + dy < gridH; dy++) {
+        for (let dx = 0; dx < step && startX + dx < gridW; dx++) {
+          const outBase = ((startY + dy) * gridW + startX + dx) * 3;
+          out[outBase] = source[srcBase];
+          out[outBase + 1] = source[srcBase + 1];
+          out[outBase + 2] = source[srcBase + 2];
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
 export function decodeEntityFrame(buf: ArrayBuffer): DecodedEntityFrame | null {
   if (buf.byteLength < 20) return null;
   const view = new DataView(buf);
@@ -40,8 +96,6 @@ export function decodeEntityFrame(buf: ArrayBuffer): DecodedEntityFrame | null {
   const gridH       = view.getUint32(8, true);
   const entityCount = view.getUint32(12, true);
   const tick        = view.getUint32(16, true);
-
-  const cells = gridW * gridH;
   const u8 = new Uint8Array(buf);
 
   let offset = 20;
@@ -64,15 +118,23 @@ export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
 
   const gridW = view.getUint32(4, true);
   const gridH = view.getUint32(8, true);
+  const step  = Math.max(1, view.getUint32(12, true));
   const tick  = view.getUint32(16, true);
-  const cells = gridW * gridH;
+  const fieldW = Math.max(1, Math.floor(gridW / step));
+  const fieldH = Math.max(1, Math.floor(gridH / step));
+  const cells = fieldW * fieldH;
   const u8 = new Uint8Array(buf);
 
   let offset = 20;
-  const resources = u8.slice(offset, offset + cells); offset += cells;
-  const signals   = u8.slice(offset, offset + cells * 3); offset += cells * 3;
-  const poison    = u8.slice(offset, offset + cells); offset += cells;
-  const glyphs    = u8.slice(offset, offset + cells);
+  const packedResources = u8.slice(offset, offset + cells); offset += cells;
+  const packedSignals   = u8.slice(offset, offset + cells * 3); offset += cells * 3;
+  const packedPoison    = u8.slice(offset, offset + cells); offset += cells;
+  const packedGlyphs    = u8.slice(offset, offset + cells);
+
+  const resources = expandScalarField(packedResources, gridW, gridH, step);
+  const signals = expandSignalField(packedSignals, gridW, gridH, step);
+  const poison = expandScalarField(packedPoison, gridW, gridH, step);
+  const glyphs = expandScalarField(packedGlyphs, gridW, gridH, step);
 
   return { gridW, gridH, tick, resources, signals, poison, glyphs };
 }

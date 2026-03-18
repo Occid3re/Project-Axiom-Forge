@@ -7,7 +7,6 @@ import type { WorldSnapshot, GenerationResult } from '../../engine';
 interface AmbientStatsProps {
   snapshot: WorldSnapshot | null;
   generation: number;
-  totalGenerations: number;
   worldIndex: number;
   totalWorlds: number;
   bestScore: number;
@@ -37,7 +36,7 @@ function Metric({
 }
 
 export function AmbientStats({
-  snapshot, generation, totalGenerations, worldIndex, totalWorlds, bestScore, generations,
+  snapshot, generation, worldIndex, totalWorlds, bestScore, generations,
 }: AmbientStatsProps) {
   const pop = snapshot?.population ?? 0;
   const diversity = snapshot?.diversity ?? 0;
