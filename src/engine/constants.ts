@@ -4,19 +4,21 @@
  */
 
 // --- Neural-network genome layout (Elman recurrent network) ---
-// Genome = 180 float weights:
-//   W1 [NN_INPUTS × NN_HIDDEN = 100]:  genome[input * NN_HIDDEN + hidden]
-//   W2 [NN_HIDDEN × NN_OUTPUTS = 80]:  genome[NN_W1_SIZE + hidden * NN_OUTPUTS + action]
+// Genome = 270 float weights:
+//   W1 [NN_INPUTS × NN_HIDDEN = 160]:  genome[input * NN_HIDDEN + hidden]
+//   W2 [NN_HIDDEN × NN_OUTPUTS = 110]: genome[NN_W1_SIZE + hidden * NN_OUTPUTS + action]
 //
 // Forward pass (per entity, per tick):
-//   inputs  = [localResource, energyNorm, entityDensity, signalStrength,
-//              nearestKinEnergy, nearestThreatDist, kinRatio,
-//              glyphStrength, glyphAffinity, ageNorm]                     (10 values, all 0–1)
-//   h_new   = tanh(W1 · inputs)                                          (10 units)
+//   inputs  = [localResource, energyNorm, glyphStrength, ageNorm,         (4 scalars)
+//              resN, resE, resS, resW,                                     (directional resource)
+//              entN, entE, entS, entW,                                     (directional entity presence)
+//              glyphN, glyphE, glyphS, glyphW]                            (directional glyph)
+//                                                                          (16 values total, all 0–1)
+//   h_new   = tanh(W1 · inputs)                                           (10 units)
 //   h_blend = (1 - memoryPersistence) * h_new + memoryPersistence * h_prev
-//   logits  = W2 · h_blend                                               (8 values)
+//   logits  = W2 · h_blend                                                (11 values)
 //   action  = softmax_sample(logits)
-//   h_prev  = h_blend                                       (stored in entity memory[0..9])
+//   h_prev  = h_blend                                        (stored in entity memory[0..9])
 //
 // The hidden-state carry-over makes this an Elman network: entities remember
 // past states and can condition decisions on temporal context (threats, resources,
@@ -26,12 +28,12 @@
 // Init: W1 ~ N(0, √(2/NN_INPUTS)),  W2 ~ N(0, √(2/NN_HIDDEN))  (Xavier)
 // Mutation: Gaussian noise, soft-clamped at ±6.
 
-export const NN_INPUTS   = 10;
+export const NN_INPUTS   = 16;
 export const NN_HIDDEN   = 10;
-export const NN_OUTPUTS  = 8;
-export const NN_W1_SIZE  = NN_INPUTS  * NN_HIDDEN;   // 100
-export const NN_W2_SIZE  = NN_HIDDEN  * NN_OUTPUTS;  // 80
-export const GENOME_LENGTH = NN_W1_SIZE + NN_W2_SIZE; // 180
+export const NN_OUTPUTS  = 11;
+export const NN_W1_SIZE  = NN_INPUTS  * NN_HIDDEN;   // 160
+export const NN_W2_SIZE  = NN_HIDDEN  * NN_OUTPUTS;  // 110
+export const GENOME_LENGTH = NN_W1_SIZE + NN_W2_SIZE; // 270
 
 // --- Entity data layout (Struct of Arrays) ---
 export const MAX_ENTITIES    = 4096;
@@ -43,13 +45,16 @@ export const GLYPH_CHANNELS = 4;
 // --- Action types ---
 export const enum ActionType {
   IDLE      = 0,
-  MOVE      = 1,
-  EAT       = 2,
-  REPRODUCE = 3,
-  SIGNAL    = 4,
-  ATTACK    = 5,
-  DEPOSIT   = 6,
-  ABSORB    = 7,
+  MOVE_N    = 1,
+  MOVE_E    = 2,
+  MOVE_S    = 3,
+  MOVE_W    = 4,
+  EAT       = 5,
+  REPRODUCE = 6,
+  SIGNAL    = 7,
+  ATTACK    = 8,
+  DEPOSIT   = 9,
+  ABSORB    = 10,
 }
 
 // --- Resource distribution types ---

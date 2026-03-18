@@ -4,12 +4,13 @@
  * All hot-path operations use typed arrays — no object allocation per tick.
  *
  * Decision making: each entity runs an Elman recurrent network each tick:
- *   inputs  = [localResource, energyNorm, entityDensity, signalStrength,
- *              nearestKinEnergy, nearestThreatDist, kinRatio,
- *              glyphStrength, glyphAffinity, ageNorm]
+ *   inputs  = [localResource, energyNorm, glyphStrength, ageNorm,      (4 scalars)
+ *              resN, resE, resS, resW,                                  (directional resource)
+ *              entN, entE, entS, entW,                                  (directional entity)
+ *              glyphN, glyphE, glyphS, glyphW]                         (directional glyph)
  *   h_new   = tanh(W1 · inputs)                                        (10 units)
  *   h_blend = (1-p) * h_new + p * h_prev (p = memoryPersistence; h_prev from entity memory)
- *   logits  = W2 · h_blend                                             (8 action logits)
+ *   logits  = W2 · h_blend                                             (11 action logits)
  *   action  = softmax_sample(logits)
  *
  * Corpse ecology: dead entities return energy to the resource grid (corpseEnergy law).
@@ -83,9 +84,14 @@ export class World {
   private tickAbsorbs  = 0;
 
   // Pre-allocated MLP scratch buffers — avoids GC pressure in the hot loop
-  private readonly nnInputs = new Float64Array(NN_INPUTS);
-  private readonly nnHidden = new Float64Array(NN_HIDDEN);
-  private readonly nnLogits = new Float64Array(NN_OUTPUTS);
+  private readonly nnInputs  = new Float64Array(NN_INPUTS);
+  private readonly nnHidden  = new Float64Array(NN_HIDDEN);
+  private readonly nnLogits  = new Float64Array(NN_OUTPUTS);
+  // Pre-allocated directional perception buffers (4 cardinal dirs: 0=N,1=E,2=S,3=W)
+  private readonly dirRes    = new Float64Array(4);
+  private readonly dirEnt    = new Float64Array(4);
+  private readonly dirGlyph  = new Float64Array(4);
+  private readonly dirCount  = new Int32Array(4);
 
   constructor(laws: WorldLaws, config: WorldConfig, seed: number) {
     this.laws   = laws;
@@ -301,10 +307,10 @@ export class World {
     const base = NN_W1_SIZE;
     let dot = 0, magI = 0, magJ = 0;
     for (let h = 0; h < NN_HIDDEN; h++) {
-      const si = entities.genomes[i * GENOME_LENGTH + base + h * NN_OUTPUTS + 4]; // SIGNAL col
-      const sj = entities.genomes[j * GENOME_LENGTH + base + h * NN_OUTPUTS + 4];
-      const ei = entities.genomes[i * GENOME_LENGTH + base + h * NN_OUTPUTS + 2]; // EAT col
-      const ej = entities.genomes[j * GENOME_LENGTH + base + h * NN_OUTPUTS + 2];
+      const si = entities.genomes[i * GENOME_LENGTH + base + h * NN_OUTPUTS + 7]; // SIGNAL col
+      const sj = entities.genomes[j * GENOME_LENGTH + base + h * NN_OUTPUTS + 7];
+      const ei = entities.genomes[i * GENOME_LENGTH + base + h * NN_OUTPUTS + 5]; // EAT col
+      const ej = entities.genomes[j * GENOME_LENGTH + base + h * NN_OUTPUTS + 5];
       dot  += si * sj + ei * ej;
       magI += si * si + ei * ei;
       magJ += sj * sj + ej * ej;
@@ -355,139 +361,114 @@ export class World {
         if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
       }
 
-      // Neighborhood scan: overcrowding, cooperation, AND social perception inputs
+      // Directional perception scan (radius-2): accumulate resource, entity, glyph per quadrant.
+      // Quadrant assignment uses dominant axis: |dx|>=|dy| → E/W, else → S/N.
+      // Also used for overcrowding / cooperation since it covers the same neighbourhood.
       const crowdThresh = laws.crowdingThreshold ?? 3;
       const coopBonus   = laws.cooperationBonus ?? 0;
       const cx = entities.x[i], cy = entities.y[i];
-
+      const { dirRes, dirEnt, dirGlyph, dirCount } = this;
+      dirRes.fill(0); dirEnt.fill(0); dirGlyph.fill(0); dirCount.fill(0);
       let nCount = 0;
-      let kinCount = 0;
-      let nearestKinDist = 99, nearestKinEnergy = 0;
-      let nearestThreatDist = 99;
 
-      // Radius-2 scan for social perception (wider than radius-1 cooperation)
       for (let dy0 = -2; dy0 <= 2; dy0++) {
         for (let dx0 = -2; dx0 <= 2; dx0++) {
           if (dx0 === 0 && dy0 === 0) continue;
           const nx0 = ((cx + dx0) % gridW + gridW) % gridW;
           const ny0 = ((cy + dy0) % gridH + gridH) % gridH;
-          const ni = this.entityMap[ny0 * gridW + nx0];
-          if (ni < 0) continue;
-
-          const dist = Math.abs(dx0) + Math.abs(dy0); // Manhattan
-          nCount++;
-
-          // Species similarity check
-          const sim = this.genomeSimilarity(i, ni);
-          if (sim >= kinThresh) {
-            kinCount++;
-            if (dist < nearestKinDist) {
-              nearestKinDist = dist;
-              nearestKinEnergy = Math.min(1, entities.energy[ni] / (laws.energyCap ?? 1.5));
-            }
-          } else {
-            if (dist < nearestThreatDist) {
-              nearestThreatDist = dist;
-            }
+          // Dominant-axis quadrant: 0=N, 1=E, 2=S, 3=W
+          const adx = dx0 < 0 ? -dx0 : dx0, ady = dy0 < 0 ? -dy0 : dy0;
+          const dir = adx >= ady ? (dx0 > 0 ? 1 : 3) : (dy0 > 0 ? 2 : 0);
+          dirCount[dir]++;
+          const nIdx = ny0 * gridW + nx0;
+          dirRes[dir] += this.resources[nIdx];
+          if (this.entityMap[nIdx] >= 0) { dirEnt[dir]++; nCount++; }
+          // Glyph magnitude at neighbour cell
+          const gBase = nIdx * GLYPH_CHANNELS;
+          let gMag = 0;
+          for (let c = 0; c < GLYPH_CHANNELS; c++) {
+            const g = this.glyphs[gBase + c]; gMag += g * g;
           }
+          dirGlyph[dir] += Math.sqrt(gMag);
+        }
+      }
+      // Normalise by cell count per quadrant → density-like values in [0,1]
+      for (let d = 0; d < 4; d++) {
+        if (dirCount[d] > 0) {
+          dirRes[d]   /= dirCount[d];
+          dirEnt[d]   /= dirCount[d];
+          dirGlyph[d]  = Math.min(1, dirGlyph[d] / dirCount[d]);
         }
       }
 
-      // Cooperation: energy bonus per kin neighbor within radius-1
-      if (coopBonus > 0 && kinCount > 0) {
-        entities.energy[i] += coopBonus * Math.min(kinCount, crowdThresh);
+      // Cooperation: energy bonus per neighbour (direction-agnostic approximation)
+      if (coopBonus > 0 && nCount > 0) {
+        entities.energy[i] += coopBonus * Math.min(nCount, crowdThresh);
         const cap = laws.energyCap ?? 1.5;
         if (entities.energy[i] > cap) entities.energy[i] = cap;
       }
-      // Overcrowding penalty beyond threshold (uses total neighbors)
+      // Overcrowding penalty
       if (nCount > crowdThresh) {
         entities.energy[i] -= 0.04 * (nCount - crowdThresh);
         if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
       }
 
-      // Compute social + stigmergic inputs, then decide action
-      const action = this.decideAction(i, nCount, kinCount, nearestKinEnergy,
-                                        nearestKinDist, nearestThreatDist);
+      // Decide action from directional perception
+      const action = this.decideAction(i, dirRes, dirEnt, dirGlyph);
       entities.action[i] = action;
 
       switch (action) {
-        case ActionType.MOVE:      this.executeMove(i);      break;
-        case ActionType.EAT:       this.executeEat(i);       break;
-        case ActionType.REPRODUCE: this.executeReproduce(i); break;
-        case ActionType.SIGNAL:    this.executeSignal(i);    break;
-        case ActionType.ATTACK:    this.executeAttack(i);    break;
-        case ActionType.DEPOSIT:   this.executeDeposit(i);   break;
-        case ActionType.ABSORB:    this.executeAbsorb(i);    break;
+        case ActionType.MOVE_N:    this.executeMove(i,  0, -1); break;
+        case ActionType.MOVE_E:    this.executeMove(i,  1,  0); break;
+        case ActionType.MOVE_S:    this.executeMove(i,  0,  1); break;
+        case ActionType.MOVE_W:    this.executeMove(i, -1,  0); break;
+        case ActionType.EAT:       this.executeEat(i);          break;
+        case ActionType.REPRODUCE: this.executeReproduce(i);    break;
+        case ActionType.SIGNAL:    this.executeSignal(i);       break;
+        case ActionType.ATTACK:    this.executeAttack(i);       break;
+        case ActionType.DEPOSIT:   this.executeDeposit(i);      break;
+        case ActionType.ABSORB:    this.executeAbsorb(i);       break;
         // IDLE: do nothing
       }
     }
   }
 
   /**
-   * MLP decision: 10 sensory inputs → 10 hidden (tanh) → 8 action logits → softmax sample.
+   * MLP decision: 16 sensory inputs → 10 hidden (tanh) → 11 action logits → softmax sample.
+   * Directional inputs: 4 dirs × {resource, entity density, glyph} from the perception scan.
    * Uses pre-allocated scratch buffers (nnInputs, nnHidden, nnLogits) — zero allocation.
    */
   private decideAction(
     i: number,
-    nCount: number, kinCount: number,
-    nearestKinEnergy: number, nearestKinDist: number, nearestThreatDist: number,
+    dirRes: Float64Array,   // [N, E, S, W] normalised resource
+    dirEnt: Float64Array,   // [N, E, S, W] normalised entity density
+    dirGlyph: Float64Array, // [N, E, S, W] normalised glyph magnitude
   ): ActionType {
-    const { entities, rng, resources, signals, glyphs, gridW, gridH, laws } = this;
+    const { entities, rng, resources, glyphs, gridW, laws } = this;
     const genome = entities.getGenome(i);
 
     const ex = entities.x[i];
     const ey = entities.y[i];
 
-    // Compute signal strength in radius-2 neighborhood
-    let nearbySignal = 0;
-    const radius = 2;
-    const area   = (2 * radius + 1) * (2 * radius + 1) - 1; // 24
-    for (let dy = -radius; dy <= radius; dy++) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        if (dx === 0 && dy === 0) continue;
-        const nx   = ((ex + dx) % gridW + gridW) % gridW;
-        const ny   = ((ey + dy) % gridH + gridH) % gridH;
-        const nIdx = ny * gridW + nx;
-        for (let c = 0; c < laws.signalChannels; c++) {
-          nearbySignal += signals[nIdx * laws.signalChannels + c];
-        }
-      }
-    }
-
-    // 10 sensory inputs (all normalised to ~[0, 1])
-    const inp = this.nnInputs;
-    inp[0] = resources[ey * gridW + ex];                                      // localResource
-    inp[1] = Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5));       // energyNorm
-    inp[2] = nCount / area;                                                    // entityDensity
-    inp[3] = nearbySignal / (area * laws.signalChannels || 1);                 // signalStrength
-    inp[4] = nearestKinDist < 99 ? nearestKinEnergy : 0;                      // nearestKinEnergy
-    inp[5] = nearestThreatDist < 99 ? 1 / nearestThreatDist : 0;             // nearestThreatDist
-    inp[6] = nCount > 0 ? kinCount / nCount : 0.5;                            // kinRatio
-    // Glyph inputs
+    // Glyph at current cell
     const cellBase = (ey * gridW + ex) * GLYPH_CHANNELS;
     let glyphMag = 0;
     for (let c = 0; c < GLYPH_CHANNELS; c++) {
-      const g = glyphs[cellBase + c];
-      glyphMag += g * g;
+      const g = glyphs[cellBase + c]; glyphMag += g * g;
     }
-    inp[7] = Math.min(1, Math.sqrt(glyphMag));                                // glyphStrength
-    // glyphAffinity: dot product of compressed hidden state with glyph
-    // Read previous hidden state from memory for affinity comparison
-    let glyphDot = 0;
-    if (glyphMag > 0.001) {
-      const mOff = i * MAX_MEMORY_SIZE;
-      for (let c = 0; c < GLYPH_CHANNELS; c++) {
-        // Compress hidden state same way as deposit: sum pairs
-        const h0 = entities.memory[mOff + c * 2] || 0;
-        const h1 = (c * 2 + 1 < NN_HIDDEN) ? (entities.memory[mOff + c * 2 + 1] || 0) : 0;
-        glyphDot += glyphs[cellBase + c] * (h0 + h1);
-      }
-      const hiddenMag2 = glyphMag; // approximate — use glyph mag as denominator proxy
-      inp[8] = Math.max(-1, Math.min(1, glyphDot / (Math.sqrt(glyphMag) + 1e-6))) * 0.5 + 0.5;
-    } else {
-      inp[8] = 0.5; // neutral when no glyph present
-    }
-    inp[9] = Math.min(1, entities.age[i] / 500);                              // ageNorm
+
+    // 16 sensory inputs (all normalised to ~[0, 1])
+    const inp = this.nnInputs;
+    inp[0]  = resources[ey * gridW + ex];                                     // localResource
+    inp[1]  = Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5));      // energyNorm
+    inp[2]  = Math.min(1, Math.sqrt(glyphMag));                               // glyphStrength (own cell)
+    inp[3]  = Math.min(1, entities.age[i] / 500);                             // ageNorm
+    // Directional resource (N, E, S, W)
+    inp[4]  = dirRes[0]; inp[5]  = dirRes[1]; inp[6]  = dirRes[2]; inp[7]  = dirRes[3];
+    // Directional entity density (N, E, S, W)
+    inp[8]  = dirEnt[0]; inp[9]  = dirEnt[1]; inp[10] = dirEnt[2]; inp[11] = dirEnt[3];
+    // Directional glyph magnitude (N, E, S, W)
+    inp[12] = dirGlyph[0]; inp[13] = dirGlyph[1]; inp[14] = dirGlyph[2]; inp[15] = dirGlyph[3];
 
     // W1 forward pass: hidden[h] = tanh(Σ_k genome[k * NN_HIDDEN + h] * input[k])
     const h = this.nnHidden;
@@ -543,16 +524,9 @@ export class World {
     return ActionType.IDLE;
   }
 
-  private executeMove(i: number): void {
-    const { entities, laws, gridW, gridH, entityMap, rng } = this;
+  private executeMove(i: number, dx: number, dy: number): void {
+    const { entities, laws, gridW, gridH, entityMap } = this;
     const speed = laws.moveSpeed ?? 1;
-
-    let dx = rng.int(-1, 1);
-    let dy = rng.int(-1, 1);
-    if (dx === 0 && dy === 0) {
-      if (rng.random() > 0.5) dx = rng.random() > 0.5 ? 1 : -1;
-      else                    dy = rng.random() > 0.5 ? 1 : -1;
-    }
 
     const ox = entities.x[i];
     const oy = entities.y[i];
@@ -649,7 +623,7 @@ export class World {
     const channel = Math.floor(Math.abs(genome[0]) * laws.signalChannels) % laws.signalChannels;
 
     let sigColSum = 0;
-    for (let j = 0; j < NN_HIDDEN; j++) sigColSum += genome[NN_W1_SIZE + j * NN_OUTPUTS + 4];
+    for (let j = 0; j < NN_HIDDEN; j++) sigColSum += genome[NN_W1_SIZE + j * NN_OUTPUTS + 7];
     const strength = 1 / (1 + Math.exp(-sigColSum * 0.3));
 
     const range = laws.signalRange;

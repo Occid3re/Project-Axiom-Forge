@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 8;
+const STATE_VERSION = 9;
 
 interface SavedState {
   version: number;
@@ -128,8 +128,8 @@ class WorkerPool {
 // Genome is now 80 MLP weights (real-valued floats).
 // Visualisation bytes are derived from W2 column means (hidden→action weights),
 // sigmoid-mapped to [0, 1]:
-//   aggression255: W2 ATTACK column (a=5)  → how strongly this network attacks
-//   species255:    W2 SIGNAL column (a=4) + W2 EAT column (a=2) → behaviour fingerprint
+//   aggression255: W2 ATTACK column (a=8)  → how strongly this network attacks
+//   species255:    W2 SIGNAL column (a=7) + W2 EAT column (a=5) → behaviour fingerprint
 
 export function packFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
@@ -174,21 +174,21 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
   for (let e = 0; e < entityCount; e++) u8[offset++] = Math.min(255, (vs.entityEnergy[e] * 255) | 0);
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityAction[e];
 
-  // Aggression byte: mean of W2 ATTACK column (a=5), sigmoid → hunt tendency
+  // Aggression byte: mean of W2 ATTACK column (a=8), sigmoid → hunt tendency
   for (let e = 0; e < entityCount; e++) {
     let attackSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
-      attackSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 5];
+      attackSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 8];
     }
     u8[offset++] = Math.round(255 / (1 + Math.exp(-attackSum * 0.4)));
   }
 
-  // Species hue byte: W2 SIGNAL column (a=4) + W2 EAT column (a=2) → behaviour fingerprint
+  // Species hue byte: W2 SIGNAL column (a=7) + W2 EAT column (a=5) → behaviour fingerprint
   for (let e = 0; e < entityCount; e++) {
     let sigSum = 0, eatSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
-      sigSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 4]; // SIGNAL=4
-      eatSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 2]; // EAT=2
+      sigSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 7]; // SIGNAL=7
+      eatSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 5]; // EAT=5
     }
     const sigTend = 1 / (1 + Math.exp(-sigSum * 0.3));
     const eatTend = 1 / (1 + Math.exp(-eatSum * 0.3));
@@ -209,13 +209,16 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
     u8[offset++] = Math.round(255 / (1 + Math.exp(-(std - 1.2) * 2.5)));
   }
 
-  // Motility byte: W2 MOVE column (a=1) mean, sigmoid → movement drive
+  // Motility byte: mean of all 4 MOVE columns (MOVE_N=1..MOVE_W=4), sigmoid → movement drive
   for (let e = 0; e < entityCount; e++) {
     let moveSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
-      moveSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 1]; // MOVE=1
+      moveSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 1] // MOVE_N
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 2] // MOVE_E
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 3] // MOVE_S
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 4]; // MOVE_W
     }
-    u8[offset++] = Math.round(255 / (1 + Math.exp(-moveSum * 0.3)));
+    u8[offset++] = Math.round(255 / (1 + Math.exp(-moveSum * 0.075))); // /4 absorbed into scale
   }
 
   return buf;
@@ -238,7 +241,7 @@ export interface MetaBroadcast {
   evalSpeed:    number;       // effective eval ticks/sec (across all workers)
   serverMs:     number;       // EMA of display world step time (ms)
   serverPressure: number;     // 0-2: how much the world is punishing creatures for server load
-  sampleGenome?: number[];    // 180 MLP weights of the most-energetic display entity
+  sampleGenome?: number[];    // 270 MLP weights of the most-energetic display entity
   displaySeed:  number;       // changes every time startDisplayWorld() is called
 }
 
