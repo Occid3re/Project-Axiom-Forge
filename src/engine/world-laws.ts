@@ -36,6 +36,9 @@ export interface WorldLaws {
 
   // Perception
   maxPerceptionRadius: number;
+
+  // Lifespan — entities die after this many ticks regardless of energy
+  maxAge: number;
 }
 
 interface FloatRange {
@@ -64,6 +67,7 @@ const INT_RANGES: Record<string, { min: number; max: number }> = {
   signalChannels: { min: 1, max: 6 },
   memorySize: { min: 1, max: 16 },
   maxPerceptionRadius: { min: 1, max: 6 },
+  maxAge: { min: 100, max: 600 },
 };
 
 // --- Seeded PRNG (xoshiro128**) for deterministic runs ---
@@ -146,6 +150,7 @@ export function randomLaws(rng: PRNG): WorldLaws {
     disasterProbability: rng.uniform(0.0, 0.05),
     terrainVariability: rng.uniform(0.0, 1.0),
     maxPerceptionRadius: rng.int(1, 6),
+    maxAge: rng.int(100, 600),
   };
 }
 
@@ -198,6 +203,7 @@ export function starterLaws(): WorldLaws {
     disasterProbability:  0.003,
     terrainVariability:   0.65,
     maxPerceptionRadius:  3,
+    maxAge:               300,
   };
 }
 

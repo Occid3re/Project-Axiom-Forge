@@ -221,8 +221,9 @@ export class World {
       const i = order[oi];
       if (!entities.alive[i]) continue;
 
-      // Age and metabolic cost
+      // Age, lifespan, and metabolic cost
       entities.age[i]++;
+      if (entities.age[i] >= laws.maxAge) { this.killEntity(i); continue; }
       entities.energy[i] -= laws.idleCost;
       if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
 
