@@ -66,6 +66,7 @@ export function WorldLawsView({ laws, title = 'World Laws' }: WorldLawsViewProps
       params: [
         { label: 'Cooperation', value: laws.cooperationBonus ?? 0, max: 0.15 },
         { label: 'Crowding Limit', value: laws.crowdingThreshold ?? 3, max: 6 },
+        { label: 'Carry Cap', value: laws.carryingCapacity ?? 0.1, max: 0.3 },
         { label: 'Drift Speed', value: laws.driftSpeed ?? 0, max: 0.4 },
         { label: 'Poison Strength', value: laws.poisonStrength ?? 0, max: 0.3 },
         { label: 'Death Toxin', value: laws.deathToxin ?? 0, max: 0.8 },

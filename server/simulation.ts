@@ -301,6 +301,7 @@ export interface MetaBroadcast {
   totalWorlds:  number;
   tick:         number;
   bestLaws:     import('../src/engine/world-laws.ts').WorldLaws | null;
+  displayLaws:  import('../src/engine/world-laws.ts').WorldLaws | null;
   population:   number;
   scores:       WorldScores | null;
   bestScore:    number;
@@ -629,7 +630,7 @@ export class SimulationController {
           disasterCount:         0,
           postDisasterRecoveries: 0,
         },
-        this.bestLaws,
+        world.laws,
         EVAL_CONFIG.scoreWeights,
       );
     }
@@ -667,6 +668,7 @@ export class SimulationController {
       totalWorlds: EVAL_CONFIG.worldsPerGeneration,
       tick:        this.displayTick,
       bestLaws:    this.bestLaws,
+      displayLaws: world.laws,
       population:  snap.population,
       scores:      this.displayScores,
       bestScore:   this.bestScore,

@@ -335,9 +335,15 @@ export class World {
     }
 
     // Carrying-capacity "air" pressure — O(1), applied inline below.
-    const MAX_POP     = 4096;
-    const ratio       = n / MAX_POP;
-    const airPressure = Math.min(0.3, 0.0002 * Math.exp(ratio * 9));
+    const MAX_POP = 4096;
+    const sustainablePop = Math.max(
+      16,
+      Math.min(MAX_POP, Math.floor(gridW * gridH * (laws.carryingCapacity ?? 0.10))),
+    );
+    const overCapacity = n > sustainablePop ? n / sustainablePop - 1 : 0;
+    const airPressure = overCapacity > 0
+      ? Math.min(0.3, 0.0002 * Math.exp(overCapacity * 9))
+      : 0;
 
     const kinThresh = laws.kinThreshold ?? 0.8;
 

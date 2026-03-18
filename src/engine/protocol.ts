@@ -84,6 +84,7 @@ export interface ServerMeta {
   tick: number;
   displayTick?: number;
   bestLaws: import('./world-laws').WorldLaws | null;
+  displayLaws?: import('./world-laws').WorldLaws | null;
   population: number;
   scores: {
     persistence: number; diversity: number; complexityGrowth: number;

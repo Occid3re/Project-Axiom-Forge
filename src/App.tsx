@@ -24,6 +24,19 @@ import { NeuralNetView } from './ui/components/NeuralNetView';
 
 interface Snapshot { population: number; diversity?: number; signalActivity?: number; }
 
+const STAGE_NAMES = [
+  'Survival',
+  'Resource Cycling',
+  'Glyph Communication',
+  'Diversity',
+  'Predation',
+  'Cultural Marks',
+  'Kin Selection',
+  'Speciation',
+  'Ecology',
+  'Meta-Evolution',
+];
+
 // ---- Epilepsy Warning ------------------------------------------------------
 
 function EpilepsyGate({ onEnter }: { onEnter: () => void }) {
@@ -156,7 +169,8 @@ export default function App() {
 
     socket.on('meta', (m: ServerMeta) => {
       setMeta(m);
-      if (m.bestLaws) setLaws(m.bestLaws);
+      if (m.displayLaws) setLaws(m.displayLaws);
+      else if (m.bestLaws) setLaws(m.bestLaws);
       if (m.logEntry) addLog(m.logEntry);
     });
 
@@ -202,7 +216,7 @@ export default function App() {
           <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-[11px] font-medium bg-white/[0.03] border border-white/[0.05]">
             <span className="text-gray-500">Stage:</span>
             <span className="font-semibold text-cyan-400">
-              {['Survival','Resource Cycling','Signaling','Diversity','Predation','Cultural Marks','Kin Selection','Speciation','Ecology','Meta-Evolution'][emergence.stage]}
+              {STAGE_NAMES[emergence.stage]}
             </span>
           </div>
         )}
@@ -335,7 +349,7 @@ export default function App() {
                   ['Persistence',   scores.persistence,      '#10b981'],
                   ['Diversity',     scores.diversity,        '#8b5cf6'],
                   ['Complexity',    scores.complexityGrowth, '#ec4899'],
-                  ['Communication', scores.communication,    '#06b6d4'],
+                  ['Glyph Comms',   scores.communication,    '#06b6d4'],
                   ['Env Structure', scores.envStructure,     '#f59e0b'],
                   ['Adaptability',  scores.adaptability,     '#f97316'],
                   ['Speciation',    scores.speciation ?? 0,  '#a855f7'],
@@ -369,7 +383,7 @@ export default function App() {
             {/* World Laws — scrollable, no fixed height needed */}
             {laws && (
               <div className="p-3 border-b border-white/[0.04] shrink-0">
-                <WorldLawsView laws={laws} title="Evolved Physics" />
+                <WorldLawsView laws={laws} title="Displayed Physics" />
               </div>
             )}
 
@@ -378,7 +392,7 @@ export default function App() {
               <div className="p-3 shrink-0">
                 <h4 className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-1">Current Stage</h4>
                 <div className="text-xs font-semibold text-cyan-400">
-                  {['Survival','Resource Cycling','Signaling','Diversity','Predation','Cultural Marks','Kin Selection','Speciation','Ecology','Meta-Evolution'][emergence.stage]}
+                  {STAGE_NAMES[emergence.stage]}
                 </div>
                 <div className="text-[8px] text-gray-600 mt-0.5">Stage {emergence.stage + 1} of 10</div>
               </div>
@@ -434,7 +448,7 @@ export default function App() {
                     ['Persist',  scores.persistence,      '#10b981'],
                     ['Diverse',  scores.diversity,        '#8b5cf6'],
                     ['Complex',  scores.complexityGrowth, '#ec4899'],
-                    ['Signal',   scores.communication,    '#06b6d4'],
+                    ['Glyphs',   scores.communication,    '#06b6d4'],
                     ['Environ',  scores.envStructure,     '#f59e0b'],
                     ['Adapt',    scores.adaptability,     '#f97316'],
                     ['Species',  scores.speciation ?? 0,  '#a855f7'],
