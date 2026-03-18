@@ -360,6 +360,8 @@ export class WorldRenderer {
   private updateFrame(f: CombinedFrame) {
     const { gridW: W, gridH: H, entityCount } = f;
     const cells = W * H;
+    const specimenMode = Boolean((f as CombinedFrame & { specimenMode?: boolean }).specimenMode);
+    const renderScale = (f as CombinedFrame & { renderScale?: number }).renderScale ?? 1;
 
     // Allocate trail if grid changed; clear it on world reset (tick goes back to 0)
     if (W !== this.lastGridW || H !== this.lastGridH) {
@@ -382,6 +384,7 @@ export class WorldRenderer {
     const trailData8 = this._trailBuf!;
 
     // ── Trail decay ──────────────────────────────────────────────────────────
+    if (specimenMode) trail.fill(0);
     for (let i = 0; i < trail.length; i++) trail[i] *= 0.92;
 
     // ── Resource texture ─────────────────────────────────────────────────────
@@ -419,8 +422,10 @@ export class WorldRenderer {
 
       // Write trail — motile entities leave stronger trails
       const ti = cy * W + cx;
-      const trailStr = energy * (0.5 + motility * 0.5);
-      if (trail[ti] < trailStr) trail[ti] = trailStr;
+      if (!specimenMode) {
+        const trailStr = energy * (0.5 + motility * 0.5);
+        if (trail[ti] < trailStr) trail[ti] = trailStr;
+      }
 
       // ── Body plan classification ─────────────────────────────────────
       // 10 distinct shapes from genome traits, inspired by real microorganism morphology
@@ -488,7 +493,7 @@ export class WorldRenderer {
       const sinA = Math.sin(angle);
 
       // Cell size: slight growth with complexity + energy
-      const cellR = 1.5 + energy * 1.2 + complexity * 0.5;
+      const cellR = (1.5 + energy * 1.2 + complexity * 0.5) * renderScale;
       const shapeExtra = plan === 3 ? (lobeAmp * cellR)
         : plan === 2 ? (curvature * 2)
         : (plan === 5 || plan === 9) ? (waveAmp * 1.5)

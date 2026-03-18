@@ -83,6 +83,13 @@ function wrapDistance01(from: number, to: number) {
   return Math.min(direct, 1 - direct);
 }
 
+function signedWrapDelta01(from: number, to: number) {
+  let delta = from - to;
+  if (delta > 0.5) delta -= 1;
+  if (delta < -0.5) delta += 1;
+  return delta;
+}
+
 export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: WorldViewProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -242,7 +249,7 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
           bucket: aggregate.bucket,
           panX: centerX,
           panY: centerY,
-          zoom: clamp(0.07 + aggregate.count / 1500, 0.07, 0.16),
+          zoom: 0.94,
           title,
           subtitle: `${Math.min(SPECIMEN_LIMIT, aggregate.count)} specimens from a ${aggregate.count}-body colony`,
         };
@@ -288,6 +295,31 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
       if (selected.length < 4) return frame;
 
       const entityCount = selected.length;
+      const padding = 0.18;
+      let minDx = Infinity;
+      let maxDx = -Infinity;
+      let minDy = Infinity;
+      let maxDy = -Infinity;
+      const localPositions = new Array<{ dx: number; dy: number }>(entityCount);
+
+      for (let i = 0; i < entityCount; i++) {
+        const source = selected[i].index;
+        const x = frame.entityX[source] / Math.max(1, frame.gridW);
+        const y = frame.entityY[source] / Math.max(1, frame.gridH);
+        const dx = signedWrapDelta01(x, shot.panX);
+        const dy = signedWrapDelta01(y, shot.panY);
+        localPositions[i] = { dx, dy };
+        if (dx < minDx) minDx = dx;
+        if (dx > maxDx) maxDx = dx;
+        if (dy < minDy) minDy = dy;
+        if (dy > maxDy) maxDy = dy;
+      }
+
+      const spanX = Math.max(0.06, maxDx - minDx);
+      const spanY = Math.max(0.06, maxDy - minDy);
+      const centerDx = (minDx + maxDx) * 0.5;
+      const centerDy = (minDy + maxDy) * 0.5;
+      const scale = (1 - padding * 2) / Math.max(spanX, spanY);
       const entityX = new Uint8Array(entityCount);
       const entityY = new Uint8Array(entityCount);
       const entityEnergy = new Uint8Array(entityCount);
@@ -299,8 +331,11 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
 
       for (let i = 0; i < entityCount; i++) {
         const source = selected[i].index;
-        entityX[i] = frame.entityX[source];
-        entityY[i] = frame.entityY[source];
+        const local = localPositions[i];
+        const specimenX = clamp(0.5 + (local.dx - centerDx) * scale, padding, 1 - padding);
+        const specimenY = clamp(0.5 + (local.dy - centerDy) * scale, padding, 1 - padding);
+        entityX[i] = Math.round(specimenX * (frame.gridW - 1));
+        entityY[i] = Math.round(specimenY * (frame.gridH - 1));
         entityEnergy[i] = frame.entityEnergy[source];
         entityAction[i] = frame.entityAction[source];
         entityAggression[i] = frame.entityAggression[source];
@@ -322,7 +357,9 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
         entitySpeciesHue,
         entityComplexity,
         entityMotility,
-      };
+        specimenMode: true,
+        renderScale: clamp(2.0 + 0.35 / Math.max(spanX, spanY), 2.2, 3.2),
+      } as DecodedEntityFrame;
     };
 
     const loop = (ms: number) => {
@@ -390,8 +427,10 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
 
           if (director.shot) {
             const current = viewRef.current;
-            current.panX = lerpWrapped(current.panX, director.shot.panX, 0.024);
-            current.panY = lerpWrapped(current.panY, director.shot.panY, 0.024);
+            const targetPanX = director.shot.bucket >= 0 ? 0.5 : director.shot.panX;
+            const targetPanY = director.shot.bucket >= 0 ? 0.5 : director.shot.panY;
+            current.panX = lerpWrapped(current.panX, targetPanX, 0.024);
+            current.panY = lerpWrapped(current.panY, targetPanY, 0.024);
             current.zoom += (director.shot.zoom - current.zoom) * 0.024;
             renderer.setView(current.panX, current.panY, current.zoom);
             setHud(director.shot.title, director.shot.subtitle);
