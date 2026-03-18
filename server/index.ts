@@ -24,8 +24,10 @@ const io = new SocketIO(httpServer, {
   maxHttpBufferSize: 512 * 1024, // 512KB max frame
 });
 
-app.use(express.static(join(__dirname, '../dist')));
-app.get('*', (_req, res) => res.sendFile(join(__dirname, '../dist/index.html')));
+// In the bundle (server/dist/server.mjs), __dirname = server/dist/ so we need ../../dist.
+// In source (server/index.ts), __dirname = server/ — but dev uses vite, not this route.
+app.use(express.static(join(__dirname, '../../dist')));
+app.get('*', (_req, res) => res.sendFile(join(__dirname, '../../dist/index.html')));
 
 // ── Simulation ──────────────────────────────────────────────────────────────
 
