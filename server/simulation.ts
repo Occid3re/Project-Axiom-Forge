@@ -126,7 +126,7 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
   const { gridW: W, gridH: H, entityCount, signalChannels } = vs;
   const channels   = Math.min(signalChannels, 3);
-  const totalBytes = 20 + W * H + W * H * channels + entityCount * 6;
+  const totalBytes = 20 + W * H + W * H * channels + entityCount * 8;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
@@ -172,6 +172,33 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
     const sigTend = 1 / (1 + Math.exp(-sigSum * 0.3));
     const eatTend = 1 / (1 + Math.exp(-eatSum * 0.3));
     u8[offset++] = Math.round((sigTend * 0.6 + eatTend * 0.4) * 255);
+  }
+
+  // Genome complexity byte: standard deviation of all 80 genome weights → 0-255.
+  // Xavier-initialised weights start with std ≈ 0.5–0.7. After sustained evolution
+  // and selection pressure, std rises to 1.5–3+. Sigmoid mapping makes early
+  // genomes look simple (low complexity) and evolved ones look elaborate.
+  for (let e = 0; e < entityCount; e++) {
+    const gOff = e * GENOME_LENGTH;
+    let sum = 0, sum2 = 0;
+    for (let g = 0; g < GENOME_LENGTH; g++) {
+      const w = vs.entityGenomes[gOff + g];
+      sum += w; sum2 += w * w;
+    }
+    const mean = sum / GENOME_LENGTH;
+    const variance = sum2 / GENOME_LENGTH - mean * mean;
+    const std = Math.sqrt(Math.max(0, variance));
+    // Map: std=0.5→~30, std=1.0→~100, std=2.0→~200, std=3.0→~240
+    u8[offset++] = Math.round(255 / (1 + Math.exp(-(std - 1.2) * 2.5)));
+  }
+
+  // Motility byte: W2 MOVE column mean, sigmoid → how much this network moves
+  for (let e = 0; e < entityCount; e++) {
+    let moveSum = 0;
+    for (let j = 0; j < NN_HIDDEN; j++) {
+      moveSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 1]; // MOVE=1
+    }
+    u8[offset++] = Math.round(255 / (1 + Math.exp(-moveSum * 0.3)));
   }
 
   return buf;

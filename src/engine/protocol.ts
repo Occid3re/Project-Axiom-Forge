@@ -16,6 +16,8 @@ export interface DecodedFrame {
   entityAction: Uint8Array;
   entityAggression: Uint8Array;
   entitySpeciesHue: Uint8Array;
+  entityComplexity: Uint8Array;  // genome weight std dev → 0-255 (evolution stage)
+  entityMotility: Uint8Array;    // W2 MOVE column drive → 0-255
 }
 
 const MAGIC = 0x41584647;
@@ -42,9 +44,11 @@ export function decodeFrame(buf: ArrayBuffer): DecodedFrame | null {
   const entityEnergy     = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityAction     = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityAggression = u8.slice(offset, offset + entityCount); offset += entityCount;
-  const entitySpeciesHue = u8.slice(offset, offset + entityCount);
+  const entitySpeciesHue = u8.slice(offset, offset + entityCount); offset += entityCount;
+  const entityComplexity = u8.slice(offset, offset + entityCount); offset += entityCount;
+  const entityMotility   = u8.slice(offset, offset + entityCount);
 
-  return { gridW, gridH, entityCount, tick, resources, signals, entityX, entityY, entityEnergy, entityAction, entityAggression, entitySpeciesHue };
+  return { gridW, gridH, entityCount, tick, resources, signals, entityX, entityY, entityEnergy, entityAction, entityAggression, entitySpeciesHue, entityComplexity, entityMotility };
 }
 
 export interface ServerMeta {

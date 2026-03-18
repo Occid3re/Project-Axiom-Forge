@@ -1,5 +1,5 @@
 /**
- * WebGL renderer — cinematic 4-pass bloom pipeline.
+ * WebGL renderer — phase-contrast microscopy pipeline.
  *
  * Pass 1  Scene data → FBO_scene  (full canvas resolution)
  * Pass 2  H-blur FBO_scene → FBO_blurA  (half resolution)
@@ -7,9 +7,9 @@
  * Pass 4  Composite (FBO_scene + FBO_blurB) → canvas
  *
  * Data textures (resource / entity / signal / trail) use LINEAR filtering
- * so the 80×80 grid is bilinearly interpolated — no pixel squares.
- * Entities are rendered as 3×3 Gaussian splats on the CPU for visible dots.
- * Trail texture persists across frames and decays — movement leaves amber wakes.
+ * so the grid is bilinearly interpolated — no pixel squares.
+ * Entities are rendered as rod-shaped bacterial cells via CPU splats.
+ * Trail texture persists across frames and decays — movement leaves slime wakes.
  *
  * updateFrame(f)  — upload new data (call when a server frame arrives)
  * render(ms)      — run all 4 passes (call every requestAnimationFrame tick)
@@ -26,7 +26,7 @@ const QUAD_VERT = `
   void main() { gl_Position = vec4(a_pos, 0.0, 1.0); v_uv = a_uv; }
 `;
 
-// Pass 1 — world scene, renders to FBO at canvas resolution
+// Pass 1 — phase-contrast microscopy scene
 const SCENE_FRAG = `
   precision highp float;
   varying vec2 v_uv;
@@ -37,6 +37,11 @@ const SCENE_FRAG = `
   uniform float u_time;
   uniform vec2 u_pan;
   uniform float u_zoom;
+
+  // Fast hash for film grain
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
 
   void main() {
     // World UV — zoomed/panned view, tiled with REPEAT wrap
@@ -49,45 +54,60 @@ const SCENE_FRAG = `
 
     float r = res.r;
 
-    // Dark microscope field — near-black with faint cool tint
-    vec3 color = vec3(0.003, 0.005, 0.009);
+    // Dark microscope field
+    vec3 color = vec3(0.004, 0.006, 0.010);
+
+    // Agar substrate — faint warm noise
+    float substrate = hash(wuv * 180.0) * 0.006;
+    color += vec3(substrate * 0.6, substrate * 0.8, substrate * 0.2);
 
     // Nutrient medium — warm amber-green, slow gentle pulse
-    float pulse = 0.88 + 0.12 * sin(u_time * 0.7 + wuv.x * 11.0 + wuv.y * 8.0);
-    color += vec3(0.10, 0.18, 0.03) * r * pulse;
-    color += vec3(0.18, 0.28, 0.04) * r * r * 1.8 * pulse;  // bright nutrient hotspot
+    float pulse = 0.92 + 0.08 * sin(u_time * 0.4 + wuv.x * 9.0 + wuv.y * 7.0);
+    color += vec3(0.06, 0.13, 0.02) * r * pulse;
+    color += vec3(0.10, 0.20, 0.03) * r * r * 1.4 * pulse;
 
     // Chemical signal fluorescence — three dye channels
-    color += vec3(0.88, 0.06, 0.10) * sig.r * 1.1;   // red: danger / alarm pheromone
-    color += vec3(0.00, 0.65, 0.50) * sig.g * 0.9;   // teal-green: vitality signal
-    color += vec3(0.70, 0.05, 0.88) * sig.b * 0.8;   // magenta: marker / kin signal
+    color += vec3(0.90, 0.07, 0.10) * sig.r * 0.9;
+    color += vec3(0.02, 0.68, 0.52) * sig.g * 0.8;
+    color += vec3(0.62, 0.06, 0.82) * sig.b * 0.7;
 
-    // Cell rendering — 4-color 2D palette (role × species)
-    // ent.r = ring brightness, ent.g = species hue 0-1, ent.b = predator/role hue, ent.a = presence
+    // Phase-contrast cell rendering
+    // ent.r = membrane ring brightness, ent.g = species hue, ent.b = role, ent.a = presence
     float presence = ent.a;
     if (presence > 0.01) {
       float ringInt  = ent.r;
-      float speciesH = ent.g;  // species hue 0-1
-      float role     = ent.b;  // predator/herbivore 0-1
+      float speciesH = ent.g;
+      float role     = ent.b;
 
-      // 2D species color space:
-      // role axis: herbivore (teal/lime) ↔ predator (orange/purple)
-      // species axis: type A ↔ type B within each role
-      vec3 c00 = vec3(0.02, 0.74, 0.92);  // blue-teal   (herbivore A)
-      vec3 c01 = vec3(0.10, 0.92, 0.28);  // lime-green  (herbivore B)
-      vec3 c10 = vec3(0.98, 0.38, 0.02);  // orange-red  (predator A)
-      vec3 c11 = vec3(0.76, 0.04, 0.88);  // violet      (predator B)
+      // Biological color palette
+      vec3 c00 = vec3(0.04, 0.68, 0.88);  // cyan-teal    (herbivore A)
+      vec3 c01 = vec3(0.12, 0.88, 0.32);  // lime-green   (herbivore B)
+      vec3 c10 = vec3(0.96, 0.42, 0.06);  // orange       (predator A)
+      vec3 c11 = vec3(0.72, 0.06, 0.84);  // violet       (predator B)
       vec3 cellCol = mix(mix(c00, c01, speciesH), mix(c10, c11, speciesH), role);
-      color += cellCol * ringInt * 1.5;
+
+      // Phase contrast: translucent body + bright membrane
+      float body     = presence * (1.0 - ringInt) * 0.10;
+      float membrane = ringInt * 1.4;
+      color += cellCol * (body + membrane);
+
+      // Phase-contrast halo — bright edge glow at presence boundary
+      // presence*(1-presence) peaks at 0.5 = cell edge transition
+      float halo = presence * (1.0 - presence) * 4.0;
+      color += cellCol * halo * 0.35;
     }
 
-    // Trail — faint green cytoplasm residue
-    color += vec3(0.01, 0.22, 0.09) * trail.r * 0.38;
+    // Trail — faint slime residue
+    color += vec3(0.01, 0.16, 0.05) * trail.r * 0.30;
 
-    // Vignette — always canvas-relative, independent of zoom/pan
-    vec2 uvc = v_uv - 0.5;
-    float vig = clamp(1.0 - dot(uvc, uvc) * 1.8, 0.0, 1.0);
-    gl_FragColor = vec4(color * vig, 1.0);
+    // Film grain — microscope camera sensor noise
+    float grain = (hash(v_uv * 900.0 + u_time * 4.7) - 0.5) * 0.022;
+    color += grain;
+
+    // Circular vignette — microscope eyepiece
+    float vigR = length(v_uv - 0.5) * 2.0;
+    float vig = smoothstep(1.05, 0.60, vigR);
+    gl_FragColor = vec4(max(color, vec3(0.0)) * vig, 1.0);
   }
 `;
 
@@ -113,7 +133,7 @@ const BLUR_FRAG = `
   }
 `;
 
-// Pass 4 — composite scene + bloom with chromatic aberration
+// Pass 4 — composite with barrel distortion + chromatic aberration
 const COMP_FRAG = `
   precision highp float;
   varying vec2 v_uv;
@@ -122,27 +142,30 @@ const COMP_FRAG = `
   uniform float u_fade;
 
   void main() {
-    // Chromatic aberration — subtle radial shift of R and B
-    vec2 uvc  = v_uv - 0.5;
-    float dist = length(uvc);
-    vec2 rOff  = uvc * dist * 0.008;
-    vec2 bOff  = uvc * dist * 0.008;
+    vec2 uvc = v_uv - 0.5;
+    float r2 = dot(uvc, uvc);
+
+    // Barrel distortion — microscope optics
+    vec2 d_uv = v_uv + uvc * r2 * 0.035;
+
+    // Chromatic aberration — colour fringing from lens
+    vec2 caOff = uvc * length(uvc) * 0.006;
 
     vec3 scene;
-    scene.r = texture2D(u_scene, v_uv + rOff).r;
-    scene.g = texture2D(u_scene, v_uv).g;
-    scene.b = texture2D(u_scene, v_uv - bOff).b;
+    scene.r = texture2D(u_scene, d_uv + caOff).r;
+    scene.g = texture2D(u_scene, d_uv).g;
+    scene.b = texture2D(u_scene, d_uv - caOff).b;
 
     vec3 bloom;
-    bloom.r = texture2D(u_bloom, v_uv + rOff * 0.5).r;
-    bloom.g = texture2D(u_bloom, v_uv).g;
-    bloom.b = texture2D(u_bloom, v_uv - bOff * 0.5).b;
+    bloom.r = texture2D(u_bloom, d_uv + caOff * 0.4).r;
+    bloom.g = texture2D(u_bloom, d_uv).g;
+    bloom.b = texture2D(u_bloom, d_uv - caOff * 0.4).b;
 
-    // Screen blend: 1 - (1 - scene)(1 - bloom * strength)
-    vec3 color = 1.0 - (1.0 - scene) * (1.0 - bloom * 0.7);
+    // Screen blend
+    vec3 color = 1.0 - (1.0 - scene) * (1.0 - bloom * 0.65);
 
-    // Subtle gamma lift to preserve shadow detail
-    color = pow(max(color, vec3(0.0)), vec3(0.88));
+    // Gamma
+    color = pow(max(color, vec3(0.0)), vec3(0.90));
 
     gl_FragColor = vec4(color * u_fade, 1.0);
   }
@@ -156,7 +179,7 @@ const BLIT_FRAG = `
   uniform float u_fade;
   void main() {
     vec3 c = texture2D(u_src, v_uv).rgb;
-    c = pow(max(c, vec3(0.0)), vec3(0.88));
+    c = pow(max(c, vec3(0.0)), vec3(0.90));
     gl_FragColor = vec4(c * u_fade, 1.0);
   }
 `;
@@ -200,6 +223,13 @@ export class WorldRenderer {
   private trailData: Float32Array | null = null;
   private lastGridW = 0; private lastGridH = 0;
   private lastTick  = -1;
+
+  // Cached CPU texture buffers — avoid allocation each frame (eliminates ~1MB/frame GC)
+  private _resBuf:   Uint8Array | null = null;
+  private _entBuf:   Uint8Array | null = null;
+  private _sigBuf:   Uint8Array | null = null;
+  private _trailBuf: Uint8Array | null = null;
+  private _texBufN = 0;
 
   // Render targets
   private fboScene: FBO | null = null;
@@ -278,14 +308,25 @@ export class WorldRenderer {
     this.rebuildFBOs();
   }
 
+  /** Ensure CPU texture buffers exist for current grid size. */
+  private ensureTexBufs(n: number) {
+    if (this._texBufN === n) return;
+    this._resBuf   = new Uint8Array(n);
+    this._entBuf   = new Uint8Array(n);
+    this._sigBuf   = new Uint8Array(n);
+    this._trailBuf = new Uint8Array(n);
+    this._texBufN  = n;
+  }
+
   /** Upload new simulation data to GPU textures. Call on each server frame. */
   updateFrame(f: DecodedFrame) {
     const { gl } = this;
     const { gridW: W, gridH: H, entityCount } = f;
+    const cells = W * H;
 
     // Allocate trail if grid changed; clear it on world reset (tick goes back to 0)
     if (W !== this.lastGridW || H !== this.lastGridH) {
-      this.trailData = new Float32Array(W * H);
+      this.trailData = new Float32Array(cells);
       this.lastGridW = W; this.lastGridH = H;
     }
     if (f.tick < this.lastTick) {
@@ -296,43 +337,71 @@ export class WorldRenderer {
     this.lastTick = f.tick;
     const trail = this.trailData!;
 
+    // Reuse CPU buffers — eliminates ~1MB/frame GC pressure
+    this.ensureTexBufs(cells * 4);
+    const resData    = this._resBuf!;
+    const entData    = this._entBuf!;
+    const sigData    = this._sigBuf!;
+    const trailData8 = this._trailBuf!;
+
     // ── Trail decay ──────────────────────────────────────────────────────────
     for (let i = 0; i < trail.length; i++) trail[i] *= 0.92;
 
     // ── Resource texture ─────────────────────────────────────────────────────
-    const resData = new Uint8Array(W * H * 4);
-    for (let i = 0; i < W * H; i++) {
+    for (let i = 0; i < cells; i++) {
       const v = f.resources[i];
       resData[i*4] = resData[i*4+1] = resData[i*4+2] = v;
       resData[i*4+3] = 255;
     }
 
-    // ── Entity texture — biological cell ring pattern ────────────────────────
-    // R = membrane ring intensity
-    // G = species hue (0-255, same for all pixels of this entity)
-    // B = predator/role hue
-    // A = presence (non-zero anywhere the cell contributes, gates shader)
-    const entData = new Uint8Array(W * H * 4);
+    // ── Entity texture — evolving bacterial morphology ─────────────────────
+    // R = membrane ring intensity, G = species hue, B = role hue, A = presence
+    // Morphology evolves with genome complexity:
+    //   Low complexity (early): round coccus, thin membrane, no internal structure
+    //   High complexity (evolved): elongated rod, thick ruffled membrane,
+    //     visible organelles, flagella-like extensions
+    entData.fill(0); // clear — entities are max-blended onto clean slate
+
     for (let e = 0; e < entityCount; e++) {
       const cx = f.entityX[e];
       const cy = f.entityY[e];
       const energy = f.entityEnergy[e] / 255;
-      // entityAggression now carries combined predatorDrive (packed in simulation.ts)
-      // Boost role toward red when currently attacking, toward lime when reproducing
       const baseRole = f.entityAggression[e] / 255;
       const act = f.entityAction[e];
       const actionShift = act === 5 ? 0.28 : act === 3 ? -0.22 : act === 4 ? 0.10 : 0;
       const role = Math.max(0, Math.min(1, baseRole + actionShift));
-      const aggr = (role * 255) | 0; // reuse variable name for the packing below
+      const roleU8 = (role * 255) | 0;
       const speciesHue = f.entitySpeciesHue[e]; // 0-255
+      const complexity = (f.entityComplexity?.[e] ?? 80) / 255; // 0-1, default ~early
+      const motility   = (f.entityMotility?.[e] ?? 128) / 255;  // 0-1
 
-      // Write trail at entity center
+      // Write trail — motile entities leave stronger trails
       const ti = cy * W + cx;
-      if (trail[ti] < energy) trail[ti] = energy;
+      const trailStr = energy * (0.5 + motility * 0.5);
+      if (trail[ti] < trailStr) trail[ti] = trailStr;
 
-      // Cell radius: 1.8–3.5 grid cells — small enough not to carpet the grid
-      const cellR = 1.8 + energy * 1.7;
-      const scanR = Math.ceil(cellR) + 1;
+      // ── Morphology from genome complexity ───────────────────────────────
+      // Elongation: round coccus (1.0) → elongated rod (2.2)
+      const aspect = 1.0 + complexity * 1.2;
+      // Orientation: species-dependent angle
+      const angle = (speciesHue / 255) * Math.PI;
+      const cosA = Math.cos(angle);
+      const sinA = Math.sin(angle);
+
+      // Cell size: slight growth with complexity + energy
+      const cellR = 1.5 + energy * 1.2 + complexity * 0.5;
+      const scanR = Math.ceil(cellR) + 2;
+
+      // Membrane thickness: thin (early) → thick ruffled (evolved)
+      const membraneWidth = 0.30 + complexity * 0.20; // fraction of radius
+      const membraneStart = 1.0 - membraneWidth;
+
+      // Internal structure: organelle count and visibility
+      const organelleStr = complexity * 0.12; // faint → visible
+      const organelleFreq = 1.5 + complexity * 3.0; // spatial frequency
+
+      // Flagella: motile evolved entities grow extensions at poles
+      const flagella = motility * complexity;
 
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
@@ -340,48 +409,72 @@ export class WorldRenderer {
           const ny = cy + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
 
-          const rr = Math.sqrt(dx * dx + dy * dy);
-          if (rr > scanR) continue;
+          // Rotated + elongated distance (species-dependent rod shape)
+          const ldx = dx * cosA + dy * sinA;
+          const ldy = (-dx * sinA + dy * cosA) * aspect;
+          const rr = Math.sqrt(ldx * ldx + ldy * ldy);
 
-          let ringVal:     number; // brightness of ring/nucleus
-          let presenceVal: number; // gate for shader
-
-          if (rr < 0.7) {
-            // Bright nucleus
-            ringVal     = 0.95;
-            presenceVal = 1.0;
-          } else if (rr < cellR * 0.60) {
-            // Dark cytoplasm
-            ringVal     = 0.0;
-            presenceVal = 1.0;
-          } else if (rr <= cellR) {
-            // Membrane ring — sin bump
-            const t = (rr - cellR * 0.60) / (cellR * 0.40);
-            ringVal     = 0.95 * Math.sin(Math.PI * t);
-            presenceVal = 1.0;
-          } else {
-            // Outer glow only
-            const fade = 1.0 - (rr - cellR) / 1.2;
-            if (fade <= 0) continue;
-            ringVal     = 0.12 * fade;
-            presenceVal = fade * 0.5;
+          // Flagella: extend presence along the long axis beyond the cell body
+          let flagellaVal = 0;
+          if (flagella > 0.15 && Math.abs(ldy) < 0.6) {
+            const poleR = Math.abs(ldx) - cellR;
+            if (poleR > 0 && poleR < flagella * 3.0) {
+              const wave = 0.5 + 0.5 * Math.sin(poleR * 4.0 + ldy * 8.0);
+              flagellaVal = (1.0 - poleR / (flagella * 3.0)) * wave * 0.35 * flagella;
+            }
           }
 
-          // Energy only dims outer glow; nucleus+ring stay visible so new worlds look correct
-          if (presenceVal < 1.0) ringVal *= 0.40 + energy * 0.60;  // outer glow scales with energy
+          if (rr > cellR + 1.5 && flagellaVal <= 0) continue;
+
+          let ringVal:     number;
+          let presenceVal: number;
+
+          if (rr < 0.6) {
+            // Nucleus — brighter with complexity
+            ringVal     = 0.85 + complexity * 0.10;
+            presenceVal = 1.0;
+          } else if (rr < cellR * membraneStart) {
+            // Cytoplasm — internal organelles appear with evolution
+            const organelles = organelleStr *
+              (0.5 + 0.5 * Math.sin(ldx * organelleFreq) * Math.cos(ldy * organelleFreq * 0.7));
+            ringVal     = 0.05 + organelles;
+            presenceVal = 1.0;
+          } else if (rr <= cellR) {
+            // Membrane ring — thicker and brighter with complexity
+            const t = (rr - cellR * membraneStart) / (cellR * membraneWidth);
+            const base = Math.sin(Math.PI * t);
+            // Evolved membranes get ruffles (high-frequency wobble)
+            const ruffle = complexity > 0.3
+              ? 1.0 + complexity * 0.15 * Math.sin(Math.atan2(ldy, ldx) * (6 + complexity * 10))
+              : 1.0;
+            ringVal     = (0.75 + complexity * 0.20) * base * ruffle;
+            presenceVal = 1.0;
+          } else if (flagellaVal > 0) {
+            // Flagella region
+            ringVal     = flagellaVal;
+            presenceVal = flagellaVal * 0.8;
+          } else {
+            // Phase-contrast outer halo
+            const fade = 1.0 - (rr - cellR) / 1.5;
+            if (fade <= 0) continue;
+            ringVal     = (0.10 + complexity * 0.08) * fade;
+            presenceVal = fade * 0.55;
+          }
+
+          // Energy dims outer glow only
+          if (presenceVal < 1.0) ringVal *= 0.35 + energy * 0.65;
 
           const ci = (ny * W + nx) * 4;
           entData[ci]   = Math.max(entData[ci],   Math.min(255, (ringVal * 255) | 0));
-          entData[ci+1] = Math.max(entData[ci+1], speciesHue);   // species hue — same for all pixels of this entity
-          entData[ci+2] = Math.max(entData[ci+2], aggr);
+          entData[ci+1] = Math.max(entData[ci+1], speciesHue);
+          entData[ci+2] = Math.max(entData[ci+2], roleU8);
           entData[ci+3] = Math.max(entData[ci+3], Math.min(255, (presenceVal * 255) | 0));
         }
       }
     }
 
     // ── Signal texture ───────────────────────────────────────────────────────
-    const sigData = new Uint8Array(W * H * 4);
-    for (let i = 0; i < W * H; i++) {
+    for (let i = 0; i < cells; i++) {
       sigData[i*4]   = f.signals[i*3];
       sigData[i*4+1] = f.signals[i*3+1];
       sigData[i*4+2] = f.signals[i*3+2];
@@ -389,10 +482,11 @@ export class WorldRenderer {
     }
 
     // ── Trail texture ────────────────────────────────────────────────────────
-    const trailData8 = new Uint8Array(W * H * 4);
-    for (let i = 0; i < W * H; i++) {
+    for (let i = 0; i < cells; i++) {
       const v = Math.min(255, (trail[i] * 255) | 0);
-      trailData8[i*4] = v;
+      trailData8[i*4]   = v;
+      trailData8[i*4+1] = 0;
+      trailData8[i*4+2] = 0;
       trailData8[i*4+3] = 255;
     }
 
