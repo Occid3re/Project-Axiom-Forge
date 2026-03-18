@@ -218,12 +218,13 @@ export class World {
     }
 
     // Carrying-capacity "air" pressure — O(1), applied inline below.
-    // When population exceeds the sustainable threshold (carryingCapacity × grid cells),
-    // every entity loses extra energy proportional to how overcrowded the world is.
-    // Capped so even at extreme overshoot entities have time to act before dying.
-    const maxPop       = Math.max(5, Math.round(gridW * gridH * laws.carryingCapacity));
-    const overRatio    = Math.max(0, n / maxPop - 1);           // 0 at capacity, 1 at 2× cap
-    const airPressure  = Math.min(0.04, overRatio * 0.006);     // max 0.04/tick extra drain
+    // Soft zone: proportional drain above carryingCapacity threshold.
+    // Hard cap at 2048: pressure spikes to 0.5/tick — entities die within 3 ticks.
+    const maxPop      = Math.max(5, Math.round(gridW * gridH * laws.carryingCapacity));
+    const overRatio   = Math.max(0, n / maxPop - 1);
+    const airPressure = n > 2048
+      ? 0.5                                      // hard cap — mass die-off
+      : Math.min(0.04, overRatio * 0.006);       // soft zone — gradual pressure
 
     for (let oi = 0; oi < n; oi++) {
       const i = order[oi];
