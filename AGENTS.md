@@ -239,31 +239,29 @@ Three layered mechanisms force competitive exclusion and prevent species accumul
 
 3. **Local overcrowding** — each entity with >2 neighbors loses `0.04 × (neighbors − 2)` energy/tick.
 
-### Scoring (7 metrics → `scores.total`)
+### Scoring (10 metrics → `scores.total`)
 
-Anti-gaming measures prevent degenerate "mutation soup" strategies from scoring well.
+Anti-gaming measures prevent degenerate "monoculture soup" strategies from scoring well.
+Scoring heavily favors ecological richness (interactions 3.5, speciation 3.0) over mere survival (persistence 0.5).
 
 | Metric | Weight | What it rewards | Anti-gaming |
 |---|---|---|---|
-| persistence | 1.0 | Fraction of ticks alive + population dynamism | — |
-| diversity | 1.0 | Mean pairwise genome distance (√GENOME_LENGTH normalized) | ×chaosFactor: `1/(1 + mutRate×mutStrength×10)` |
-| complexityGrowth | 1.5 | Sustained diversity growth across 4 quarters + pop stability | ×chaosFactor + requires monotonic multi-quarter increase |
+| persistence | 0.5 | Fraction of ticks alive + population dynamism | Low weight — survival is necessary but shouldn't dominate |
+| diversity | 1.5 | Mean pairwise genome distance (√GENOME_LENGTH normalized) | ×chaosFactor: `1/(1 + mutRate×mutStrength×10)` |
+| complexityGrowth | 1.0 | Sustained diversity growth across 4 quarters + pop stability | ×chaosFactor + requires monotonic multi-quarter increase |
 | communication | 2.0 | Lagged signal→birth correlation (lag 5–15 ticks) | Temporal lag prevents same-tick coincidence gaming |
-| envStructure | 1.0 | Variance in resource coverage | — |
-| adaptability | 1.8 | Recovery from population crashes | — |
-| speciation | 1.5 | Variance of pairwise genome distances (high = clusters = real species) | Random drift → low variance; real species → high variance |
-| interactions | 1.5 | Ecological richness: attacks + signals per entity, balanced (geometric mean) | Rewards predator-prey arms races, penalizes passive grazer monocultures |
+| envStructure | 0.5 | Variance in resource coverage | Low weight — too easy to max out |
+| adaptability | 1.0 | Recovery from population crashes | — |
+| speciation | 3.0 | Variance of pairwise genome distances (high = clusters = real species) | Random drift → low variance; real species → high variance |
+| interactions | 3.5 | Ecological richness: attacks + signals per entity, balanced (geometric mean) | Rewards predator-prey arms races, penalizes passive grazer monocultures |
+| spatialStructure | 1.5 | Birth/death rate variance + poison zone activity | Penalizes populations >2000 (uniform monoculture soup penalty) |
+| populationDynamics | 1.5 | Population oscillation (peaks/troughs) + coefficient of variation | Penalizes flat population lines, rewards predator-prey cycles |
 
-**Chaos factor** prevents high-mutation strategies from getting free diversity points:
-- starterLaws (mutRate=0.06, mutStrength=0.06): chaosFactor = 0.96× (negligible penalty)
-- Degenerate (mutRate=0.477, mutStrength=0.3): chaosFactor = 0.41× (harsh discount)
-
-**Interactions score** (anti-passive-grazer):
-- Attack rate sweet spot: ~0.05–0.3 per entity per tick (present but not massacre)
-- Signal rate: any meaningful signaling usage
-- Score = `sqrt(attackScore × signalScore)` — geometric mean requires BOTH to be nonzero
-
-**Max theoretical score**: ~12.3 (but chaos discount, lagged correlation, and interaction balance make >8.0 genuinely hard)
+**Anti-monoculture design**: The scoring system is designed to prevent the "fill the screen with one species" trap:
+- spatialStructure penalizes mean population >2000 (subtracts up to 0.5 from score)
+- populationDynamics rewards oscillating populations, not static equilibria
+- interactions requires BOTH attacks AND signals (geometric mean — one alone scores zero)
+- cooperationBonus is capped at 0.02/neighbor to prevent free-energy farming
 
 ### CPU Efficiency Penalty
 After scoring each eval world (computed in eval-worker.ts):
@@ -310,7 +308,7 @@ On every new best score and every generation end, saves to `STATE_PATH`:
   "lastImprovementGen": N, "generationSummaries": [...], "population": [...] }
 ```
 Loaded on startup (version check). Survives redeploys because the file is outside `server/`.
-**STATE_VERSION=6** — incremented when scoring semantics or WorldLaws shape change.
+**STATE_VERSION=7** — incremented when scoring semantics or WorldLaws shape change.
 
 ### WorldLaws — Full Parameter Table (33 evolvable parameters)
 
