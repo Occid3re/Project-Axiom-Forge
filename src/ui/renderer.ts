@@ -40,6 +40,13 @@ const SCENE_TUNING = {
   bloomStrength: 0.40,
 } as const;
 
+const ORGANISM_COLOR_TUNING = {
+  highlightTintRetention: 0.62,
+  midtoneColorStrength: 0.34,
+  localHueCoherence: 0.30,
+  edgeSeparation: 0.18,
+} as const;
+
 const BIO_PALETTE = {
   backgroundBase: [0.018, 0.024, 0.028],
   backgroundNoise: [0.010, 0.012, 0.008],
@@ -213,18 +220,25 @@ const SCENE_FRAG = `
       vec3 c10 = ${glVec3(BIO_PALETTE.predatorA)};
       vec3 c11 = ${glVec3(BIO_PALETTE.predatorB)};
       vec3 baseCellCol = mix(mix(c00, c01, speciesH), mix(c10, c11, speciesH), role);
-      float paletteT = fract(speciesH + (role - 0.5) * ${glNum(COLOR_GRADING.hueVariation)});
+      float localFamily = hash(floor(wuv * 18.0) + vec2(19.3, 7.1));
+      float coherentHue = mix(speciesH, localFamily, ${glNum(ORGANISM_COLOR_TUNING.localHueCoherence)});
+      float paletteT = fract(coherentHue + (role - 0.5) * ${glNum(COLOR_GRADING.hueVariation)} + (speciesH - 0.5) * 0.05);
       vec3 paletteCellCol = sampleOrganismPalette(paletteT);
-      vec3 warmAccent = mix(vec3(0.0), ${glVec3(BIO_PALETTE.organismWarm)} * 0.12, role * 0.65);
+      float warmState = smoothstep(0.62, 0.92, role) * smoothstep(0.10, 0.36, poison + glyph * 0.6);
+      vec3 warmAccent = ${glVec3(BIO_PALETTE.organismWarm)} * (0.045 * warmState);
       vec3 richerCellCol = mix(baseCellCol, paletteCellCol + warmAccent, ${glNum(COLOR_GRADING.paletteStrength)});
-      vec3 cellCol = applySaturation(richerCellCol, ${glNum(COLOR_GRADING.saturationAmount)});
+      vec3 midtoneCellCol = mix(baseCellCol, richerCellCol, ${glNum(ORGANISM_COLOR_TUNING.midtoneColorStrength)});
+      vec3 cellCol = applySaturation(midtoneCellCol, ${glNum(COLOR_GRADING.saturationAmount)});
       cellCol *= ${glNum(COLOR_GRADING.brightnessAmount)};
       cellCol = clampSaturation(cellCol, ${glNum(COLOR_GRADING.maxSaturation)});
 
-      vec3 brightCell = mix(${glVec3(BIO_PALETTE.cellShadow)}, cellCol * 0.92 + vec3(0.024), 0.72);
+      vec3 highlightTarget = mix(cellCol * 1.02 + vec3(0.010, 0.011, 0.012), cellCol * 1.10 + paletteCellCol * 0.10 + vec3(0.006, 0.007, 0.008), ${glNum(ORGANISM_COLOR_TUNING.highlightTintRetention)});
+      vec3 brightCell = mix(${glVec3(BIO_PALETTE.cellShadow)}, clampSaturation(highlightTarget, ${glNum(COLOR_GRADING.maxSaturation)}), 0.74);
       float body = presence * (1.0 - ringInt) * mix(0.14, 0.30, u_specimen) * (1.0 + deepZoom * 0.10);
       float membrane = ringInt * mix(1.34, 1.04, u_specimen) * (1.0 + deepZoom * 0.14);
       color += mix(cellCol, brightCell, u_specimen) * (body + membrane);
+      color += cellCol * ringInt * (0.10 + deepZoom * 0.03) * ${glNum(ORGANISM_COLOR_TUNING.edgeSeparation)};
+      color -= vec3(0.030, 0.034, 0.040) * presence * ringInt * ${glNum(ORGANISM_COLOR_TUNING.edgeSeparation)};
 
       float specimenShadow = presence * (0.18 + ringInt * 0.12);
       color -= vec3(specimenShadow * 0.28 * u_specimen);
