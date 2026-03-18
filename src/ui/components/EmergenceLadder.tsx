@@ -1,7 +1,7 @@
 /**
- * The Emergence Ladder — the soul of the UI.
- * Eight stages from simple replicators to recursive self-improvement.
- * Lights up as the simulation achieves each milestone.
+ * The Emergence Ladder — tracks observable milestones in the simulation.
+ * Each stage maps to a concrete, measurable phenomenon the viewer can see.
+ * Stages light up based on real-time score data from the display world.
  */
 
 import { useMemo } from 'react';
@@ -14,65 +14,65 @@ export interface EmergenceState {
 
 const STAGES = [
   {
-    name: 'Replicators',
-    subtitle: 'Self-sustaining life',
-    description: 'Populations persist and reproduce reliably',
+    name: 'Survival',
+    subtitle: 'Life persists',
+    description: 'Entities survive, eat, and reproduce without going extinct. Population stays above zero across ticks.',
     icon: '◉',
     color: '#10b981',
     glowColor: 'rgba(16, 185, 129, 0.4)',
   },
   {
-    name: 'Communication',
-    subtitle: 'Signals carry meaning',
-    description: 'Information flows between agents',
+    name: 'Resource Cycling',
+    subtitle: 'Shaping the environment',
+    description: 'Entities deplete and reshape resource patterns. Resource coverage visibly fluctuates — not uniform.',
     icon: '◈',
     color: '#06b6d4',
     glowColor: 'rgba(6, 182, 212, 0.4)',
   },
   {
-    name: 'External Memory',
-    subtitle: 'Environment as storage',
-    description: 'Trails, structures, encoded signals',
+    name: 'Signaling',
+    subtitle: 'Chemical communication',
+    description: 'Signals predict future births (lagged correlation). Fluorescent dye channels glow on screen.',
     icon: '◇',
     color: '#8b5cf6',
     glowColor: 'rgba(139, 92, 246, 0.4)',
   },
   {
-    name: 'Tool Use',
-    subtitle: 'Reusable modification',
-    description: 'Agents build lasting environmental changes',
-    icon: '⬡',
-    color: '#f59e0b',
-    glowColor: 'rgba(245, 158, 11, 0.4)',
-  },
-  {
-    name: 'Abstraction',
-    subtitle: 'Internal models',
-    description: 'Prediction, compression, reasoning seeds',
+    name: 'Diversity',
+    subtitle: 'Genome divergence',
+    description: 'Genomes spread apart through selection (not just random drift). Multiple behavioral strategies coexist.',
     icon: '△',
     color: '#ec4899',
     glowColor: 'rgba(236, 72, 153, 0.4)',
   },
   {
-    name: 'Civilization',
-    subtitle: 'Specialization emerges',
-    description: 'Groups form roles — knowledge outlives individuals',
+    name: 'Predation',
+    subtitle: 'Predator-prey dynamics',
+    description: 'Entities attack each other AND the population survives. Curved vibrio predators hunt round prey.',
+    icon: '⬡',
+    color: '#f59e0b',
+    glowColor: 'rgba(245, 158, 11, 0.4)',
+  },
+  {
+    name: 'Speciation',
+    subtitle: 'Distinct species form',
+    description: 'Genome clusters emerge — groups of similar creatures with gaps between them. Different body shapes visible.',
     icon: '⬢',
     color: '#f97316',
     glowColor: 'rgba(249, 115, 22, 0.4)',
   },
   {
-    name: 'World Engineering',
-    subtitle: 'Optimizing reality',
-    description: 'Agents reshape the rules they live under',
+    name: 'Ecology',
+    subtitle: 'Complex ecosystem',
+    description: 'Multiple species coexist with predation, signaling, diversity, and resource cycling all active simultaneously.',
     icon: '◎',
     color: '#14b8a6',
     glowColor: 'rgba(20, 184, 166, 0.4)',
   },
   {
-    name: 'Recursive Threshold',
-    subtitle: 'Self-improving systems',
-    description: 'The system improves its own means of improvement',
+    name: 'Meta-Evolution',
+    subtitle: 'Physics improving',
+    description: 'The laws of physics themselves are evolving to produce richer life. Score trend accelerating across generations.',
     icon: '∞',
     color: '#e11d48',
     glowColor: 'rgba(225, 29, 72, 0.5)',
@@ -87,36 +87,40 @@ export function detectEmergence(
 
   if (!scores) return { stage: -1, progress };
 
-  // Stage 0: Replicators — population persists
-  progress[0] = Math.min(1, scores.persistence / 0.4);
+  // Stage 0: Survival — population persists reliably
+  progress[0] = Math.min(1, scores.persistence / 0.5);
 
-  // Stage 1: Communication — signals correlate with behavior
-  progress[1] = Math.min(1, scores.communication / 0.25);
+  // Stage 1: Resource Cycling — entities impact the environment
+  progress[1] = Math.min(1, scores.envStructure / 0.25);
 
-  // Stage 2: External Memory — environmental structure
-  progress[2] = Math.min(1, scores.envStructure / 0.3);
+  // Stage 2: Signaling — lagged signal→birth correlation
+  progress[2] = Math.min(1, scores.communication / 0.2);
 
-  // Stage 3: Tool Use — env structure + diversity
-  progress[3] = Math.min(1, (scores.envStructure * 0.6 + scores.diversity * 0.4) / 0.4);
+  // Stage 3: Diversity — genome divergence (chaos-discounted, so this means REAL diversity)
+  progress[3] = Math.min(1, scores.diversity / 0.25);
 
-  // Stage 4: Abstraction — complexity growth
-  progress[4] = Math.min(1, scores.complexityGrowth / 0.3);
+  // Stage 4: Predation — attacks + signals coexist with survival
+  const interactionScore = (scores as any).interactions ?? 0;
+  progress[4] = Math.min(1, interactionScore / 0.2);
 
-  // Stage 5: Civilization — everything together
-  const civScore = (scores.persistence + scores.diversity + scores.communication + scores.envStructure) / 4;
-  progress[5] = Math.min(1, civScore / 0.4);
+  // Stage 5: Speciation — distinct genome clusters
+  const speciationScore = (scores as any).speciation ?? 0;
+  progress[5] = Math.min(1, speciationScore / 0.3);
 
-  // Stage 6: World Engineering — meta-evolution improving over generations
-  if (generations.length >= 3) {
-    const recent = generations.slice(-3);
-    const improving = recent.every((g, i) => i === 0 || g.bestScore >= recent[i - 1].bestScore * 0.95);
-    const avgImprovement = generations.length > 1
-      ? (generations[generations.length - 1].bestScore - generations[0].bestScore) / generations[0].bestScore
-      : 0;
-    progress[6] = Math.min(1, (improving ? 0.5 : 0) + Math.max(0, avgImprovement) * 2);
+  // Stage 6: Ecology — everything together (geometric mean of key metrics)
+  const ecoMetrics = [
+    scores.persistence,
+    scores.diversity,
+    scores.communication,
+    interactionScore,
+    speciationScore,
+  ].filter(v => v > 0);
+  if (ecoMetrics.length >= 4) {
+    const geoMean = Math.pow(ecoMetrics.reduce((a, b) => a * b, 1), 1 / ecoMetrics.length);
+    progress[6] = Math.min(1, geoMean / 0.25);
   }
 
-  // Stage 7: Recursive Threshold — acceleration of improvement
+  // Stage 7: Meta-Evolution — score trend accelerating across generations
   if (generations.length >= 5) {
     const scores2 = generations.map(g => g.bestScore);
     const firstHalf = scores2.slice(0, Math.floor(scores2.length / 2));
@@ -251,9 +255,9 @@ export function EmergenceLadder({ emergence, tick }: EmergenceLadderProps) {
 
               {/* Tooltip on hover */}
               <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 hidden group-hover:block z-50 pointer-events-none">
-                <div className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 shadow-xl min-w-[180px]">
+                <div className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 shadow-xl min-w-[200px]">
                   <p className="text-xs font-medium text-gray-200">{stage.name}</p>
-                  <p className="text-[10px] text-gray-400 mt-0.5">{stage.description}</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed">{stage.description}</p>
                   <div className="mt-1.5 flex items-center gap-2">
                     <div className="flex-1 bg-gray-800 rounded-full h-1">
                       <div
