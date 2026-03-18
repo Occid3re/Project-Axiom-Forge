@@ -488,9 +488,8 @@ export class WorldRenderer {
 
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
-          const nx = cx + dx;
-          const ny = cy + dy;
-          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const nx = ((cx + dx) % W + W) % W;
+          const ny = ((cy + dy) % H + H) % H;
 
           // Rotated + elongated local coordinates
           let ldx = dx * cosA + dy * sinA;
