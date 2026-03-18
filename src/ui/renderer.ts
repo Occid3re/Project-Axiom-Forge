@@ -24,18 +24,20 @@ function clamp01(v: number) {
 }
 
 const COLOR_GRADING = {
-  entityBrightness: 1.14,
-  entitySaturation: 0.86,
-  backgroundBrightness: 0.96,
+  hueVariation: 0.18,
+  saturationAmount: 0.94,
+  brightnessAmount: 1.06,
+  paletteStrength: 0.56,
   glowStrength: 0.46,
+  maxSaturation: 0.24,
+  maxBrightness: 0.90,
+  backgroundBrightness: 0.96,
   contrast: 1.04,
-  paletteMix: 0.24,
 } as const;
 
 const SCENE_TUNING = {
   sceneSaturation: 0.80,
   bloomStrength: 0.40,
-  maxBrightness: 0.90,
 } as const;
 
 const BIO_PALETTE = {
@@ -51,10 +53,17 @@ const BIO_PALETTE = {
   signalB: [0.120, 0.220, 0.170],
   signalC: [0.210, 0.160, 0.240],
   trail: [0.060, 0.110, 0.080],
-  herbivoreA: [0.180, 0.420, 0.400],
-  herbivoreB: [0.340, 0.470, 0.270],
-  predatorA: [0.520, 0.340, 0.180],
-  predatorB: [0.420, 0.280, 0.430],
+  herbivoreA: [0.200, 0.390, 0.400],
+  herbivoreB: [0.280, 0.430, 0.320],
+  predatorA: [0.420, 0.340, 0.220],
+  predatorB: [0.360, 0.290, 0.410],
+  organism0: [0.240, 0.450, 0.470],
+  organism1: [0.200, 0.390, 0.430],
+  organism2: [0.290, 0.470, 0.450],
+  organism3: [0.210, 0.350, 0.390],
+  organism4: [0.340, 0.320, 0.460],
+  organism5: [0.400, 0.310, 0.380],
+  organismWarm: [0.520, 0.420, 0.280],
   cellShadow: [0.080, 0.100, 0.120],
 } as const;
 
@@ -102,8 +111,33 @@ const SCENE_FRAG = `
     return (color - 0.5) * contrast + 0.5;
   }
 
+  vec3 clampSaturation(vec3 color, float maxSat) {
+    float luma = dot(color, vec3(0.299, 0.587, 0.114));
+    float chroma = max(max(color.r, color.g), color.b) - min(min(color.r, color.g), color.b);
+    if (chroma <= maxSat) {
+      return color;
+    }
+    float preserve = maxSat / max(chroma, 0.0001);
+    return mix(vec3(luma), color, preserve);
+  }
+
   vec3 softClamp(vec3 color, float maxValue) {
     return min(color, vec3(maxValue));
+  }
+
+  vec3 sampleOrganismPalette(float t) {
+    vec3 c0 = ${glVec3(BIO_PALETTE.organism0)};
+    vec3 c1 = ${glVec3(BIO_PALETTE.organism1)};
+    vec3 c2 = ${glVec3(BIO_PALETTE.organism2)};
+    vec3 c3 = ${glVec3(BIO_PALETTE.organism3)};
+    vec3 c4 = ${glVec3(BIO_PALETTE.organism4)};
+    vec3 c5 = ${glVec3(BIO_PALETTE.organism5)};
+    float x = clamp(t, 0.0, 0.9999) * 5.0;
+    if (x < 1.0) return mix(c0, c1, x);
+    if (x < 2.0) return mix(c1, c2, x - 1.0);
+    if (x < 3.0) return mix(c2, c3, x - 2.0);
+    if (x < 4.0) return mix(c3, c4, x - 3.0);
+    return mix(c4, c5, x - 4.0);
   }
 
   void main() {
@@ -179,14 +213,17 @@ const SCENE_FRAG = `
       vec3 c10 = ${glVec3(BIO_PALETTE.predatorA)};
       vec3 c11 = ${glVec3(BIO_PALETTE.predatorB)};
       vec3 baseCellCol = mix(mix(c00, c01, speciesH), mix(c10, c11, speciesH), role);
-      vec3 richerCellCol = mix(baseCellCol, baseCellCol * vec3(1.08, 1.03, 1.10) + vec3(0.015, 0.012, 0.014), ${glNum(COLOR_GRADING.paletteMix)});
-      vec3 cellCol = applySaturation(richerCellCol, ${glNum(COLOR_GRADING.entitySaturation)});
+      float paletteT = fract(speciesH + (role - 0.5) * ${glNum(COLOR_GRADING.hueVariation)});
+      vec3 paletteCellCol = sampleOrganismPalette(paletteT);
+      vec3 warmAccent = mix(vec3(0.0), ${glVec3(BIO_PALETTE.organismWarm)} * 0.12, role * 0.65);
+      vec3 richerCellCol = mix(baseCellCol, paletteCellCol + warmAccent, ${glNum(COLOR_GRADING.paletteStrength)});
+      vec3 cellCol = applySaturation(richerCellCol, ${glNum(COLOR_GRADING.saturationAmount)});
+      cellCol *= ${glNum(COLOR_GRADING.brightnessAmount)};
+      cellCol = clampSaturation(cellCol, ${glNum(COLOR_GRADING.maxSaturation)});
 
       vec3 brightCell = mix(${glVec3(BIO_PALETTE.cellShadow)}, cellCol * 0.92 + vec3(0.024), 0.72);
       float body = presence * (1.0 - ringInt) * mix(0.14, 0.30, u_specimen) * (1.0 + deepZoom * 0.10);
       float membrane = ringInt * mix(1.34, 1.04, u_specimen) * (1.0 + deepZoom * 0.14);
-      body *= ${glNum(COLOR_GRADING.entityBrightness)};
-      membrane *= ${glNum(COLOR_GRADING.entityBrightness)};
       color += mix(cellCol, brightCell, u_specimen) * (body + membrane);
 
       float specimenShadow = presence * (0.18 + ringInt * 0.12);
@@ -202,7 +239,7 @@ const SCENE_FRAG = `
     color += grain * mix(1.0, 0.35, u_specimen);
     color = applyContrast(color, ${glNum(COLOR_GRADING.contrast)});
     color = applySaturation(color, ${glNum(SCENE_TUNING.sceneSaturation)});
-    color = softClamp(color, ${glNum(SCENE_TUNING.maxBrightness)});
+    color = softClamp(color, ${glNum(COLOR_GRADING.maxBrightness)});
 
     float scaleBarMask =
       step(0.12, v_uv.x) * step(v_uv.x, 0.34) *
@@ -277,7 +314,7 @@ const COMP_FRAG = `
     vec3 specimenColor = sharpenedScene + bloom * 0.12;
     vec3 color = mix(screenColor, specimenColor, u_specimen);
     color = pow(max(color, vec3(0.0)), mix(vec3(${glNum(1 / COLOR_GRADING.contrast)}), vec3(1.00), u_specimen));
-    color = min(color, vec3(${glNum(SCENE_TUNING.maxBrightness)}));
+    color = min(color, vec3(${glNum(COLOR_GRADING.maxBrightness)}));
 
     gl_FragColor = vec4(color * u_fade, 1.0);
   }
@@ -293,7 +330,7 @@ const BLIT_FRAG = `
   void main() {
     vec3 c = texture2D(u_src, v_uv).rgb;
     c = pow(max(c, vec3(0.0)), mix(vec3(${glNum(1 / COLOR_GRADING.contrast)}), vec3(1.00), u_specimen));
-    c = min(c, vec3(${glNum(SCENE_TUNING.maxBrightness)}));
+    c = min(c, vec3(${glNum(COLOR_GRADING.maxBrightness)}));
     gl_FragColor = vec4(c * u_fade, 1.0);
   }
 `;
