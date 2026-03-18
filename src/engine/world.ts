@@ -344,7 +344,7 @@ export class World {
     }
 
     // Carrying-capacity "air" pressure — O(1), applied inline below.
-    const MAX_POP = 4096;
+    const MAX_POP = 1024;
     const sustainablePop = Math.max(
       16,
       Math.min(MAX_POP, Math.floor(gridW * gridH * (laws.carryingCapacity ?? 0.10))),
@@ -592,7 +592,7 @@ export class World {
     const { entities, laws, rng, gridW, gridH, entityMap } = this;
 
     if (entities.energy[i] < laws.reproductionCost) return;
-    if (entities.count >= Math.min(4096, Math.floor(gridW * gridH * 0.07))) return;
+    if (entities.count >= Math.min(1024, Math.floor(gridW * gridH * 0.07))) return;
 
     const ox = entities.x[i];
     const oy = entities.y[i];

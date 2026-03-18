@@ -24,9 +24,9 @@ function wrap01(value: number) {
 }
 
 function zoomDetailBoost(zoom: number) {
-  if (zoom > 0.48) return 1.4;
-  if (zoom > 0.18) return 2.2;
-  return 2.8;
+  if (zoom > 0.48) return 1.8;
+  if (zoom > 0.18) return 2.6;
+  return 3.4;
 }
 
 function atlasLabel(boost: number) {
@@ -62,7 +62,7 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
     const observer = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      const dpr = Math.min(devicePixelRatio, 2);
+      const dpr = Math.min(devicePixelRatio, 2.5);
       const size = Math.min(rect.width, rect.height) * dpr;
       rendererRef.current?.resize(Math.round(size), Math.round(size));
     });
