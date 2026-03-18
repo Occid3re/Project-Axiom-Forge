@@ -202,19 +202,18 @@ Three layered mechanisms force competitive exclusion and prevent species accumul
 1. **Max age (`laws.maxAge`, 200–800 ticks)** — entities die of old age regardless of energy.
    Forces generational turnover; early species can't persist indefinitely. Evolved by meta-evolution.
 
-2. **Carrying-capacity air pressure (`laws.carryingCapacity`, 0.02–0.30 of grid cells)**
+2. **Exponential air pressure (hard cap: 4096 entities)**
    Computed **once per tick (O(1))**:
    ```ts
-   const maxPop      = round(gridW * gridH * laws.carryingCapacity);
-   const overRatio   = max(0, n / maxPop - 1);
-   const ratio       = n / maxPop;
-   const airPressure = Math.min(0.2, 0.001 * ratio * ratio);  // quadratic
+   const MAX_POP     = 4096;
+   const ratio       = n / MAX_POP;
+   const airPressure = Math.min(0.3, 0.00002 * Math.exp(ratio * 9));
    ```
    Applied inline in the existing entity loop — no extra passes, zero allocation.
-   - **Continuous quadratic curve**: pressure ∝ (n/maxPop)² — doubling population quadruples drain
-   - At 1× capacity: ~0.001/tick (negligible). At 2×: ~0.004. At 4×: ~0.016. At 10×: 0.1/tick
-   - Combined with `idleCost` (~0.004), at 10× capacity total drain ≈ 0.104/tick → entity with 1.5 energy lives ~14 ticks; reproduction becomes unsustainable, preventing 4000+ accumulation
-   - Capped at 0.2/tick so entities always have a few ticks to eat/act
+   - **Exponential curve**: negligible below 1024, noticeable at 2048, fatal above 3500
+   - n=1024 (25%): ~0.0002/tick. n=2048 (50%): ~0.0018 (~½ idleCost). n=3072 (75%): ~0.017 (~4× idleCost). n=3500 (85%): ~0.044 (~11× idleCost). n=4096 (100%): ~0.162
+   - Reproduction hard-capped at `min(4096, gridW * gridH * 0.07)` so even the large display world (256×256) can't exceed 4096
+   - Capped at 0.3/tick so entities always have a tick or two to act before dying
 
 3. **Local overcrowding** — each entity with >2 neighbors loses `0.04 × (neighbors − 2)` energy/tick.
 
