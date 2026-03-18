@@ -223,7 +223,7 @@ export class World {
     // pressure = min(0.3, 2e-5 × e^(9 × n/4096))
     const MAX_POP     = 4096;
     const ratio       = n / MAX_POP;
-    const airPressure = Math.min(0.3, 0.00002 * Math.exp(ratio * 9));
+    const airPressure = Math.min(0.3, 0.0002 * Math.exp(ratio * 9));
 
     for (let oi = 0; oi < n; oi++) {
       const i = order[oi];
