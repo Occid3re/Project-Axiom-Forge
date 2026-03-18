@@ -59,6 +59,14 @@ function forwardPass(g: number[]): { hidden: number[]; probs: number[] } {
   return { hidden: h, probs: exps.map(e => e / sum) };
 }
 
+// Append alpha to either a #rrggbb hex string or an hsl(h,s%,l%) string.
+// Canvas API rejects appended hex digits on hsl() strings.
+function withAlpha(color: string, hexAlpha: string): string {
+  if (color.startsWith('#')) return color + hexAlpha;
+  const a = (parseInt(hexAlpha, 16) / 255).toFixed(2);
+  return color.replace(/^hsl\(/, 'hsla(').replace(/\)$/, `, ${a})`);
+}
+
 // ── Main render function ──────────────────────────────────────────────────────
 
 function render(
@@ -197,14 +205,14 @@ function render(
     ctx.save();
     const grad = ctx.createRadialGradient(x - R * 0.3, y - R * 0.3, R * 0.1, x, y, R);
     grad.addColorStop(0, `rgba(255,255,255,${0.08 + act * 0.55})`);
-    grad.addColorStop(1, baseColor + '44');
+    grad.addColorStop(1, withAlpha(baseColor, '44'));
     ctx.shadowBlur  = R * 3;
     ctx.shadowColor = baseColor;
     ctx.beginPath();
     ctx.arc(x, y, R, 0, Math.PI * 2);
     ctx.fillStyle   = grad;
     ctx.fill();
-    ctx.strokeStyle = baseColor + (isWinner ? 'ff' : '80');
+    ctx.strokeStyle = withAlpha(baseColor, isWinner ? 'ff' : '80');
     ctx.lineWidth   = isWinner ? 2 : 1;
     ctx.globalAlpha = 0.6 + act * 0.4;
     ctx.stroke();
@@ -215,7 +223,7 @@ function render(
       ctx.save();
       const fontSize = Math.max(9, R * 0.9);
       ctx.font        = `${fontSize}px monospace`;
-      ctx.fillStyle   = baseColor + (act > 0.5 ? 'ee' : '88');
+      ctx.fillStyle   = withAlpha(baseColor, act > 0.5 ? 'ee' : '88');
       ctx.globalAlpha = 0.75;
       ctx.textAlign   = labelLeft ? 'right' : 'left';
       ctx.textBaseline = 'middle';
@@ -305,11 +313,29 @@ interface Props {
 }
 
 export function NeuralNetView({ genome }: Props) {
+  const wrapRef   = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ptsRef    = useRef<Float32Array>(makeParticleState());
   const prevKey   = useRef<number>(0);
 
-  // RAF loop — also handles canvas sizing so there is no ResizeObserver race
+  // Sizing: immediate call + ResizeObserver so canvas buffer always matches wrapper
+  useEffect(() => {
+    const wrap   = wrapRef.current;
+    const canvas = canvasRef.current;
+    if (!wrap || !canvas) return;
+
+    const sync = () => {
+      const dpr = Math.min(devicePixelRatio, 2);
+      canvas.width  = Math.round(wrap.offsetWidth  * dpr);
+      canvas.height = Math.round(wrap.offsetHeight * dpr);
+    };
+    sync(); // run immediately — no async race
+    const ro = new ResizeObserver(sync);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, []);
+
+  // RAF animation loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -319,17 +345,9 @@ export function NeuralNetView({ genome }: Props) {
     let rafId: number;
 
     const loop = (ms: number) => {
-      // Keep physical canvas pixels in sync with CSS display size
-      const dpr  = Math.min(devicePixelRatio, 2);
-      const pxW  = Math.round(canvas.clientWidth  * dpr);
-      const pxH  = Math.round(canvas.clientHeight * dpr);
-      if (canvas.width !== pxW || canvas.height !== pxH) {
-        canvas.width  = pxW;
-        canvas.height = pxH;
-      }
-
       const W = canvas.width;
       const H = canvas.height;
+      if (W < 4 || H < 4) { rafId = requestAnimationFrame(loop); return; }
 
       if (genome && genome.length >= 80) {
         const key = genome[0] + genome[40] + genome[79];
@@ -341,13 +359,11 @@ export function NeuralNetView({ genome }: Props) {
       } else {
         ctx.fillStyle = '#02040a';
         ctx.fillRect(0, 0, W, H);
-        if (W > 0 && H > 0) {
-          ctx.font         = `${Math.min(W, H) * 0.035}px monospace`;
-          ctx.fillStyle    = 'rgba(0,229,255,0.15)';
-          ctx.textAlign    = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText('Awaiting neural network data…', W / 2, H / 2);
-        }
+        ctx.font         = `${Math.min(W, H) * 0.035}px monospace`;
+        ctx.fillStyle    = 'rgba(0,229,255,0.15)';
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Awaiting neural network data…', W / 2, H / 2);
       }
       rafId = requestAnimationFrame(loop);
     };
@@ -357,9 +373,13 @@ export function NeuralNetView({ genome }: Props) {
   }, [genome]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: '100%', height: '100%', display: 'block' }}
-    />
+    // position:absolute + inset:0 gives the wrapper an unambiguous size from its
+    // positioned ancestor — height:100% on a bare block canvas is unreliable on desktop
+    <div
+      ref={wrapRef}
+      style={{ position: 'absolute', inset: 0 }}
+    >
+      <canvas ref={canvasRef} style={{ display: 'block' }} />
+    </div>
   );
 }
