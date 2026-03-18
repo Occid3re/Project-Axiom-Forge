@@ -1,7 +1,7 @@
 /**
  * WorldView: manual microscope controls with detail scaling on zoom.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { WorldRenderer } from '../renderer';
 import type { DecodedEntityFrame, DecodedFieldFrame } from '../../engine/protocol';
 
@@ -29,10 +29,6 @@ function zoomDetailBoost(zoom: number) {
   return 3.4;
 }
 
-function atlasLabel(boost: number) {
-  return boost >= 2.2 ? '4x' : '2x';
-}
-
 export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: WorldViewProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -40,7 +36,6 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
   const viewRef = useRef({ panX: 0.5, panY: 0.5, zoom: 1.0 });
   const pointersRef = useRef(new Map<number, { x: number; y: number }>());
   const pinchDistRef = useRef<number | null>(null);
-  const [detailBoost, setDetailBoost] = useState(1);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -84,7 +79,6 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
         const entityFrame = entityFrameRef.current;
         if (entityFrame) {
           const boost = zoomDetailBoost(viewRef.current.zoom);
-          setDetailBoost(prev => (prev === boost ? prev : boost));
           renderer.updateEntityFrame({
             ...entityFrame,
             renderScale: boost,
@@ -105,11 +99,6 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const syncDetail = () => {
-      const boost = zoomDetailBoost(viewRef.current.zoom);
-      setDetailBoost(prev => (prev === boost ? prev : boost));
-    };
-
     const applyZoom = (factor: number, canvasNX: number, canvasNY: number) => {
       const view = viewRef.current;
       const newZoom = clamp(view.zoom * factor, ZOOM_MIN, ZOOM_MAX);
@@ -121,7 +110,6 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
       view.panY = wrap01(worldY - cy * newZoom);
       view.zoom = newZoom;
       rendererRef.current?.setView(view.panX, view.panY, view.zoom);
-      syncDetail();
     };
 
     const onPointerDown = (event: PointerEvent) => {
@@ -180,7 +168,6 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
     const onDblClick = () => {
       viewRef.current = { panX: 0.5, panY: 0.5, zoom: 1.0 };
       rendererRef.current?.setView(0.5, 0.5, 1.0);
-      syncDetail();
     };
 
     canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
@@ -216,17 +203,6 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
         }}
         title="Scroll to zoom, drag to pan, double-click to reset"
       />
-      <div className="pointer-events-none absolute left-3 top-3 max-w-[240px] rounded-xl border border-white/10 bg-black/45 px-3 py-2 text-white backdrop-blur-md">
-        <div className="text-[10px] uppercase tracking-[0.28em] text-cyan-300/80">
-          Manual Microscope
-        </div>
-        <div className="mt-1 text-sm font-medium leading-tight">
-          Zoom for more detail
-        </div>
-        <div className="mt-1 text-xs leading-snug text-white/70">
-          Entity atlas {atlasLabel(detailBoost)} · deep zoom increases morphology detail
-        </div>
-      </div>
     </div>
   );
 }

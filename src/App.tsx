@@ -105,6 +105,7 @@ function EpilepsyGate({ onEnter }: { onEnter: () => void }) {
 export default function App() {
   const [entered, setEntered]         = useState(false);
   const [viewMode, setViewMode]       = useState<'simulation' | 'network'>('simulation');
+  const [compactLandscape, setCompactLandscape] = useState(false);
 
   // Frame stored in a ref — bypasses React state so the RAF render loop
   // in WorldView reads it directly without triggering re-renders.
@@ -144,6 +145,18 @@ export default function App() {
     }));
     setEmergence(detectEmergence(scores, genResults));
   }, [meta?.generations, meta?.scores]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(orientation: landscape) and (max-height: 520px)');
+    const sync = () => setCompactLandscape(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    window.addEventListener('resize', sync);
+    return () => {
+      media.removeEventListener('change', sync);
+      window.removeEventListener('resize', sync);
+    };
+  }, []);
 
   // Accumulate snapshots for chart
   useEffect(() => {
@@ -205,7 +218,7 @@ export default function App() {
     <div className="h-[100dvh] w-screen bg-[#070809] overflow-hidden flex flex-col select-none">
 
       {/* ── Header ─────────────────────────────────────────────────── */}
-      <header className="shrink-0 flex items-center justify-between px-3 sm:px-5 py-2.5 border-b border-white/[0.04]">
+      <header className={`shrink-0 flex items-center justify-between px-3 sm:px-5 border-b border-white/[0.04] ${compactLandscape ? 'py-1.5' : 'py-2.5'}`}>
         {/* Brand */}
         <div className="flex items-center gap-2.5">
           <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gradient-to-br from-cyan-500/20 to-purple-600/20 border border-cyan-500/20 flex items-center justify-center text-[9px] font-black text-cyan-400">
@@ -218,7 +231,7 @@ export default function App() {
         </div>
 
         {/* Stage pill — center, hidden on xs */}
-        {emergence.stage >= 0 && (
+        {emergence.stage >= 0 && !compactLandscape && (
           <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-[11px] font-medium bg-white/[0.03] border border-white/[0.05]">
             <span className="text-gray-500">Stage:</span>
             <span className="font-semibold text-cyan-400">
@@ -323,7 +336,7 @@ export default function App() {
             )}
 
             {/* Watermark */}
-            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[8px] text-gray-800 font-mono tracking-widest uppercase pointer-events-none whitespace-nowrap">
+            <div className={`absolute left-1/2 -translate-x-1/2 text-[8px] text-gray-800 font-mono tracking-widest uppercase pointer-events-none whitespace-nowrap ${compactLandscape ? 'bottom-1' : 'bottom-2'}`}>
               {viewMode === 'simulation'
                 ? `gen ${gen + 1} · world ${wIdx}/${wTot} · tick ${tick}`
                 : `neural network · fittest entity · gen ${gen + 1}`}
@@ -410,7 +423,7 @@ export default function App() {
         <div className="shrink-0 border-t border-white/[0.04] bg-black/80 backdrop-blur-sm">
 
           {/* Stat row */}
-          <div className="flex items-center justify-between px-3 sm:px-5 py-2 gap-2 overflow-x-auto">
+          <div className={`flex items-center justify-between px-3 sm:px-5 gap-2 overflow-x-auto ${compactLandscape ? 'py-1' : 'py-2'}`}>
             <Stat label="Gen"        value={gen + 1}             color="#06b6d4" />
             <div className="w-px h-6 bg-white/[0.05] shrink-0" />
             <Stat label="Eval"       value={`${wIdx}/${wTot}`}   color="#6b7280" />
@@ -441,10 +454,10 @@ export default function App() {
             )}
           </div>
 
-          <TransmissionLog entries={log} />
+          {!compactLandscape && <TransmissionLog entries={log} />}
 
           {/* Mobile panel — scores + physics, shown only when sidebars are hidden */}
-          {(scores || laws) && (
+          {(scores || laws) && !compactLandscape && (
             <div className="lg:hidden border-t border-white/[0.04]">
 
               {/* Emergence scores — horizontal scroll */}
@@ -509,7 +522,7 @@ export default function App() {
       </div>
 
       {/* Legal footer */}
-      <footer className="shrink-0 flex items-center justify-center gap-4 py-2 border-t border-white/[0.04]">
+      {!compactLandscape && <footer className="shrink-0 flex items-center justify-center gap-4 py-2 border-t border-white/[0.04]">
         <a href="https://buymeacoffee.com/juliussze" target="_blank" rel="noopener noreferrer"
            className="text-[9px] text-amber-700 hover:text-amber-500 transition-colors font-medium">
           ☕ Buy me a coffee
@@ -522,7 +535,7 @@ export default function App() {
         <a href="/datenschutz.html" className="text-[9px] text-gray-700 hover:text-gray-500 transition-colors">Privacy</a>
         <span className="text-gray-800 text-[9px]">·</span>
         <a href="/datenschutz.de.html" className="text-[9px] text-gray-700 hover:text-gray-500 transition-colors">Datenschutz</a>
-      </footer>
+      </footer>}
     </div>
   );
 }
