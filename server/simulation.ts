@@ -16,7 +16,7 @@ import { cpus } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { World, type WorldSnapshot } from '../src/engine/world.ts';
-import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws, starterLaws } from '../src/engine/world-laws.ts';
+import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws } from '../src/engine/world-laws.ts';
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
 import { GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE, GLYPH_CHANNELS } from '../src/engine/constants.ts';
 
@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 9;
+const STATE_VERSION = 10;
 
 interface SavedState {
   version: number;
@@ -667,7 +667,7 @@ export class SimulationController {
     if (this.population.length === 0) this.seedPopulation();
     // Start display with best known laws immediately
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.bestLaws ?? starterLaws());
+      this.startDisplayWorld(this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
     }
 
     while (true) {
@@ -682,16 +682,10 @@ export class SimulationController {
   }
 
   private seedPopulation() {
-    const base = starterLaws();
-    this.population = [
-      base,
-      mutateLaws(base, this.evalRng, 0.10),
-      mutateLaws(base, this.evalRng, 0.15),
-      mutateLaws(base, this.evalRng, 0.20),
-      ...Array.from({ length: EVAL_CONFIG.worldsPerGeneration - 4 }, () =>
-        randomLaws(this.evalRng),
-      ),
-    ];
+    this.population = Array.from(
+      { length: EVAL_CONFIG.worldsPerGeneration },
+      () => randomLaws(this.evalRng),
+    );
   }
 
   private async runGeneration(): Promise<void> {
@@ -761,10 +755,7 @@ export class SimulationController {
         this.population.push(mutateLaws(this.bestLaws, this.evalRng, 0.20));
         this.population.push(mutateLaws(this.bestLaws, this.evalRng, 0.30));
       }
-      // Add starter variants for known-good seeds
-      this.population.push(starterLaws());
-      this.population.push(mutateLaws(starterLaws(), this.evalRng, 0.15));
-      // Fill rest with fully random exploration
+      // Fill the rest with fully random exploration.
       while (this.population.length < N) {
         this.population.push(randomLaws(this.evalRng));
       }
@@ -885,7 +876,7 @@ export class SimulationController {
 
   getBootstrapFrames(): { entities: ArrayBuffer; fields: ArrayBuffer } | null {
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.bestLaws ?? starterLaws());
+      this.startDisplayWorld(this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
     }
     const world = this.displayWorld!;
     const baseline = this.lastFieldState ?? samplePackedFieldState(world, this.displayTick);
@@ -898,7 +889,7 @@ export class SimulationController {
   /** Step display world once. Call at ~30fps. Returns broadcast data. */
   displayStep(): { entities: ArrayBuffer; fields?: ArrayBuffer; meta: MetaBroadcast } | null {
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.bestLaws ?? starterLaws());
+      this.startDisplayWorld(this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
     }
 
     const world = this.displayWorld!;
