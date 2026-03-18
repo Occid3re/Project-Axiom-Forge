@@ -329,12 +329,20 @@ export class World {
     // Recurrent memory: blend new hidden state with previous (Elman network).
     // memoryPersistence controls how much of the previous hidden state carries over.
     // At 0 → purely reactive; at 1 → frozen hidden state. Evolved by meta-evolution.
+    // Skip on first tick (age 1) — newborns have zeroed memory, blending would
+    // dampen their first decision and increase infant mortality.
     const persistence = laws.memoryPersistence;
-    if (persistence > 0) {
+    if (persistence > 0 && entities.age[i] > 1) {
       const mOff = i * MAX_MEMORY_SIZE;
       for (let j = 0; j < NN_HIDDEN; j++) {
         h[j] = h[j] * (1 - persistence) + entities.memory[mOff + j] * persistence;
       }
+      for (let j = 0; j < NN_HIDDEN; j++) {
+        entities.memory[mOff + j] = h[j];
+      }
+    } else if (persistence > 0) {
+      // First tick: seed memory with pure reactive hidden state (no blend)
+      const mOff = i * MAX_MEMORY_SIZE;
       for (let j = 0; j < NN_HIDDEN; j++) {
         entities.memory[mOff + j] = h[j];
       }
@@ -372,7 +380,10 @@ export class World {
     // Random direction — the MLP learns WHEN to move; where to go emerges from exploration
     let dx = rng.int(-1, 1);
     let dy = rng.int(-1, 1);
-    if (dx === 0 && dy === 0) dx = rng.random() > 0.5 ? 1 : -1;
+    if (dx === 0 && dy === 0) {
+      if (rng.random() > 0.5) dx = rng.random() > 0.5 ? 1 : -1;
+      else                    dy = rng.random() > 0.5 ? 1 : -1;
+    }
 
     const ox = entities.x[i];
     const oy = entities.y[i];
@@ -518,10 +529,10 @@ export class World {
       entities.energy[target] -= stolen;
 
       if (entities.energy[target] <= 0) {
-        entities.energy[i] += 0.45; // kill bonus
+        entities.energy[i] += 0.45; // kill bonus — applied before cap
         this.killEntity(target);
       }
-      if (entities.energy[i] > 1.5) entities.energy[i] = 1.5;
+      entities.energy[i] = Math.min(1.5, entities.energy[i]);
       this.tickAttacks++;
     }
   }
