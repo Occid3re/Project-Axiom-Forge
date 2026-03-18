@@ -66,10 +66,13 @@ const SCENE_FRAG = `
     color += vec3(0.06, 0.13, 0.02) * r * pulse;
     color += vec3(0.10, 0.20, 0.03) * r * r * 1.4 * pulse;
 
-    // Chemical signal fluorescence — three dye channels
-    color += vec3(0.90, 0.07, 0.10) * sig.r * 0.9;
-    color += vec3(0.02, 0.68, 0.52) * sig.g * 0.8;
-    color += vec3(0.62, 0.06, 0.82) * sig.b * 0.7;
+    // Chemical signal fluorescence — three dye channels (subtle, not lightning)
+    float sigR = sig.r * sig.r;  // square for softer falloff — only bright when strong
+    float sigG = sig.g * sig.g;
+    float sigB = sig.b * sig.b;
+    color += vec3(0.85, 0.08, 0.10) * sigR * 0.5;
+    color += vec3(0.02, 0.65, 0.50) * sigG * 0.45;
+    color += vec3(0.60, 0.06, 0.80) * sigB * 0.40;
 
     // Phase-contrast cell rendering
     // ent.r = membrane ring brightness, ent.g = species hue, ent.b = role, ent.a = presence
