@@ -39,6 +39,11 @@ export interface WorldLaws {
 
   // Lifespan — entities die after this many ticks regardless of energy
   maxAge: number;
+
+  // Carrying capacity — fraction of grid cells sustainably occupied.
+  // Above this threshold a shared "air" depletion is applied per entity per tick,
+  // proportional to how far over capacity the population is.
+  carryingCapacity: number;
 }
 
 interface FloatRange {
@@ -60,6 +65,7 @@ const FLOAT_RANGES: Record<string, FloatRange> = {
   memoryPersistence: { min: 0.0, max: 1.0 },
   disasterProbability: { min: 0.0, max: 0.05 },
   terrainVariability: { min: 0.0, max: 1.0 },
+  carryingCapacity: { min: 0.02, max: 0.30 },
 };
 
 const INT_RANGES: Record<string, { min: number; max: number }> = {
@@ -151,6 +157,7 @@ export function randomLaws(rng: PRNG): WorldLaws {
     terrainVariability: rng.uniform(0.0, 1.0),
     maxPerceptionRadius: rng.int(1, 6),
     maxAge: rng.int(100, 600),
+    carryingCapacity: rng.uniform(0.02, 0.30),
   };
 }
 
@@ -204,6 +211,7 @@ export function starterLaws(): WorldLaws {
     terrainVariability:   0.65,
     maxPerceptionRadius:  3,
     maxAge:               300,
+    carryingCapacity:     0.10,
   };
 }
 

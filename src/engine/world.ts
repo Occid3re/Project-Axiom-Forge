@@ -217,14 +217,22 @@ export class World {
       const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
     }
 
+    // Carrying-capacity "air" pressure — O(1), applied inline below.
+    // When population exceeds the sustainable threshold (carryingCapacity × grid cells),
+    // every entity loses extra energy proportional to how overcrowded the world is.
+    // Capped so even at extreme overshoot entities have time to act before dying.
+    const maxPop       = Math.max(5, Math.round(gridW * gridH * laws.carryingCapacity));
+    const overRatio    = Math.max(0, n / maxPop - 1);           // 0 at capacity, 1 at 2× cap
+    const airPressure  = Math.min(0.04, overRatio * 0.006);     // max 0.04/tick extra drain
+
     for (let oi = 0; oi < n; oi++) {
       const i = order[oi];
       if (!entities.alive[i]) continue;
 
-      // Age, lifespan, and metabolic cost
+      // Age, lifespan, and metabolic cost + carrying-capacity air depletion
       entities.age[i]++;
       if (entities.age[i] >= laws.maxAge) { this.killEntity(i); continue; }
-      entities.energy[i] -= laws.idleCost;
+      entities.energy[i] -= laws.idleCost + airPressure;
       if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
 
       // Overcrowding death — density-dependent mortality caps population

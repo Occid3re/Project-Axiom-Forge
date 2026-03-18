@@ -196,10 +196,23 @@ strength = sigmoid(mean(W2[:, 4]) * 0.3)  // SIGNAL column mean
 - **SIGNAL** (4) — emit on derived channel, strength from W2 SIGNAL column
 - **ATTACK** (5) — target nearest entity; always gives kill bonus (0.45 energy)
 
-### Overcrowding & Population Cap
-- Each entity with >2 neighbors loses `0.04 * (neighborCount - 2)` energy per tick
-- Hard reproduction cap: entities cannot reproduce if population ≥ 7% of grid cells
-- Together these prevent population explosions
+### Population Pressure & Species Turnover
+Three layered mechanisms force competitive exclusion and prevent species accumulation:
+
+1. **Max age (`laws.maxAge`, 100–600 ticks)** — entities die of old age regardless of energy.
+   Forces generational turnover; early species can't persist indefinitely. Evolved by meta-evolution.
+
+2. **Carrying-capacity air pressure (`laws.carryingCapacity`, 0.02–0.30 of grid cells)**
+   Computed **once per tick (O(1))**:
+   ```ts
+   const maxPop      = round(gridW * gridH * laws.carryingCapacity);
+   const overRatio   = max(0, n / maxPop - 1);   // 0 at capacity, 1 at 2× cap
+   const airPressure = min(0.04, overRatio * 0.006);  // max 0.04/tick extra drain
+   ```
+   Applied inline in the existing entity loop — no extra passes, zero allocation.
+   More entities → more air depletion → weaker ones die faster → negative feedback.
+
+3. **Local overcrowding** — each entity with >2 neighbors loses `0.04 × (neighbors − 2)` energy/tick.
 
 ### Scoring (6 metrics → `scores.total`)
 | Metric | Weight | What it rewards |
