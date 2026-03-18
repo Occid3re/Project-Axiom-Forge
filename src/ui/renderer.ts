@@ -475,6 +475,7 @@ export class WorldRenderer {
       const speciesHue = f.entitySpeciesHue[e]; // 0-255
       const complexity = (f.entityComplexity?.[e] ?? 80) / 255; // 0-1, default ~early
       const motility   = (f.entityMotility?.[e] ?? 128) / 255;  // 0-1
+      const sizeMul    = Math.max(0.7, Math.min(1.95, ((f.entitySize?.[e] ?? 102) / 255) * 2));
 
       // Write trail — motile entities leave stronger trails
       const ti = f.entityY[e] * W + f.entityX[e];
@@ -554,12 +555,12 @@ export class WorldRenderer {
       const sinA = Math.sin(angle);
 
       // Cell size: slight growth with complexity + energy
-      const cellR = (1.5 + energy * 1.2 + complexity * 0.5) * renderScale;
-      const shapeExtra = cellR * (morphologyQuality === 0 ? 0.25 : 0.45 + waveAmp * 0.9 + lobeAmp * 0.8 + Math.abs(curvature) * 0.6);
+      const cellR = (1.5 + energy * 1.2 + complexity * 0.5) * renderScale * sizeMul;
+      const shapeExtra = cellR * ((morphologyQuality === 0 ? 0.25 : 0.45 + waveAmp * 0.9 + lobeAmp * 0.8 + Math.abs(curvature) * 0.6) + Math.max(0, sizeMul - 1) * 0.22);
       const scanR = Math.ceil(cellR + shapeExtra) + 3;
 
       // Membrane thickness: thin (early) → thick ruffled (evolved)
-      const membraneWidth = 0.30 + complexity * 0.20;
+      const membraneWidth = 0.28 + complexity * 0.20 + Math.max(0, sizeMul - 1) * 0.05;
       const membraneStart = 1.0 - membraneWidth;
 
       // Internal structure: organelle count and visibility

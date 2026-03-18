@@ -441,6 +441,18 @@ export class World {
         if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
       }
 
+      // Energy-rich kin clusters can swell into larger multicellular blobs.
+      const energyNorm = Math.min(1.5, entities.energy[i] / (laws.energyCap ?? 1.5));
+      const kinSupport = Math.min(1, kinCount / Math.max(1, crowdThresh));
+      const hostileCrowding = Math.min(1, Math.max(0, (nCount - kinCount) / Math.max(1, crowdThresh)));
+      const targetSize = Math.max(
+        0.7,
+        Math.min(1.9, 0.78 + Math.max(0, energyNorm - 0.45) * 1.15 + kinSupport * 0.45 - hostileCrowding * 0.18),
+      );
+      entities.size[i] += (targetSize - entities.size[i]) * 0.12;
+      entities.energy[i] -= Math.max(0, entities.size[i] - 1) * 0.0025;
+      if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
+
       // Decide action from directional perception
       const action = this.decideAction(i, dirRes, dirEnt, dirGlyph);
       entities.action[i] = action;
@@ -575,7 +587,7 @@ export class World {
       entities.actionDx[i] = dx;
       entities.actionDy[i] = dy;
     }
-    entities.energy[i] -= laws.moveCost * speed;
+    entities.energy[i] -= laws.moveCost * speed * (0.85 + entities.size[i] * 0.45);
   }
 
   private executeEat(i: number): void {
@@ -637,6 +649,7 @@ export class World {
           entities.mutateGenome(childIdx, laws.mutationRate, laws.mutationStrength, rng);
           entityMap[cell] = childIdx;
           entities.energy[i] -= laws.reproductionCost;
+          entities.size[i] = Math.max(0.78, entities.size[i] * 0.9);
           this.tickBirths++;
         }
         break;
@@ -882,6 +895,7 @@ export class World {
     entityX: Int32Array;
     entityY: Int32Array;
     entityEnergy: Float32Array;
+    entitySize: Float32Array;
     entityAction: Uint8Array;
     entityGenomes: Float32Array;
     entityCount: number;
@@ -897,6 +911,7 @@ export class World {
       entityX:       this.entities.x.subarray(0, this.entities.count),
       entityY:       this.entities.y.subarray(0, this.entities.count),
       entityEnergy:  this.entities.energy.subarray(0, this.entities.count),
+      entitySize:    this.entities.size.subarray(0, this.entities.count),
       entityAction:  this.entities.action.subarray(0, this.entities.count),
       entityGenomes: this.entities.genomes,
       entityCount:   this.entities.count,

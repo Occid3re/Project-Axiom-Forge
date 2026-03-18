@@ -488,7 +488,7 @@ export function packFieldFrame(world: World, tick: number): ArrayBuffer {
 export function packEntityFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
   const { gridW: W, gridH: H, entityCount } = vs;
-  const totalBytes = 20 + entityCount * 8;
+  const totalBytes = 20 + entityCount * 9;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
@@ -547,6 +547,10 @@ export function packEntityFrame(world: World, tick: number): ArrayBuffer {
                + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 4];
     }
     u8[offset++] = Math.round(255 / (1 + Math.exp(-moveSum * 0.075)));
+  }
+
+  for (let e = 0; e < entityCount; e++) {
+    u8[offset++] = Math.max(0, Math.min(255, Math.round((vs.entitySize[e] / 2) * 255)));
   }
 
   return buf;

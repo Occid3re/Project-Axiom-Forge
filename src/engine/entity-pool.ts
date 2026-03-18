@@ -16,6 +16,7 @@ export class EntityPool {
   readonly x: Int32Array;
   readonly y: Int32Array;
   readonly energy: Float32Array;
+  readonly size: Float32Array;
   readonly age: Int32Array;
   readonly alive: Uint8Array;
   readonly parentId: Int32Array;
@@ -31,6 +32,7 @@ export class EntityPool {
     this.x        = new Int32Array(capacity);
     this.y        = new Int32Array(capacity);
     this.energy   = new Float32Array(capacity);
+    this.size     = new Float32Array(capacity);
     this.age      = new Int32Array(capacity);
     this.alive    = new Uint8Array(capacity);
     this.parentId = new Int32Array(capacity);
@@ -54,6 +56,7 @@ export class EntityPool {
     this.x[i]        = px;
     this.y[i]        = py;
     this.energy[i]   = energy;
+    this.size[i]     = 0.8;
     this.age[i]      = 0;
     this.alive[i]    = 1;
     this.parentId[i] = parentId;
@@ -97,6 +100,7 @@ export class EntityPool {
         this.x[write]        = this.x[read];
         this.y[write]        = this.y[read];
         this.energy[write]   = this.energy[read];
+        this.size[write]     = this.size[read];
         this.age[write]      = this.age[read];
         this.alive[write]    = 1;
         this.parentId[write] = this.parentId[read];

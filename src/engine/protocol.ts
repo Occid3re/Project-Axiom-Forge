@@ -16,6 +16,7 @@ export interface DecodedEntityFrame {
   entitySpeciesHue: Uint8Array;
   entityComplexity: Uint8Array;  // genome weight std dev → 0-255 (evolution stage)
   entityMotility: Uint8Array;    // W2 MOVE column drive → 0-255
+  entitySize: Uint8Array;        // simulated growth state → 0-255 maps to ~0..2x size
 }
 
 export interface DecodedFieldFrame {
@@ -169,9 +170,10 @@ export function decodeEntityFrame(buf: ArrayBuffer): DecodedEntityFrame | null {
   const entityAggression = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entitySpeciesHue = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityComplexity = u8.slice(offset, offset + entityCount); offset += entityCount;
-  const entityMotility   = u8.slice(offset, offset + entityCount);
+  const entityMotility   = u8.slice(offset, offset + entityCount); offset += entityCount;
+  const entitySize       = u8.slice(offset, offset + entityCount);
 
-  return { gridW, gridH, entityCount, tick, entityX, entityY, entityEnergy, entityAction, entityAggression, entitySpeciesHue, entityComplexity, entityMotility };
+  return { gridW, gridH, entityCount, tick, entityX, entityY, entityEnergy, entityAction, entityAggression, entitySpeciesHue, entityComplexity, entityMotility, entitySize };
 }
 
 export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
