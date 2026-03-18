@@ -15,7 +15,9 @@
  * render(ms)      — run all 4 passes (call every requestAnimationFrame tick)
  */
 
-import type { DecodedFrame } from '../engine/protocol';
+import type { DecodedEntityFrame, DecodedFieldFrame } from '../engine/protocol';
+
+type CombinedFrame = DecodedEntityFrame & DecodedFieldFrame;
 
 // ── Shaders ──────────────────────────────────────────────────────────────────
 
@@ -253,6 +255,8 @@ export class WorldRenderer {
   private fboBlurB: FBO | null = null;
 
   private hasData = false;
+  private latestFieldFrame: DecodedFieldFrame | null = null;
+  private latestEntityFrame: DecodedEntityFrame | null = null;
   private lastRenderMs = 0;
   private smoothDelta = 16; // exponential moving average of frame delta ms
   private skipBloom = false;
@@ -334,8 +338,26 @@ export class WorldRenderer {
     this._texBufN  = n;
   }
 
-  /** Upload new simulation data to GPU textures. Call on each server frame. */
-  updateFrame(f: DecodedFrame) {
+  updateFieldFrame(f: DecodedFieldFrame) {
+    this.latestFieldFrame = f;
+    this.flushCombinedFrame();
+  }
+
+  updateEntityFrame(f: DecodedEntityFrame) {
+    this.latestEntityFrame = f;
+    this.flushCombinedFrame();
+  }
+
+  private flushCombinedFrame() {
+    if (!this.latestFieldFrame || !this.latestEntityFrame) return;
+    this.updateFrame({
+      ...this.latestFieldFrame,
+      ...this.latestEntityFrame,
+    });
+  }
+
+  /** Upload new simulation data to GPU textures. */
+  private updateFrame(f: CombinedFrame) {
     const { gl } = this;
     const { gridW: W, gridH: H, entityCount } = f;
     const cells = W * H;

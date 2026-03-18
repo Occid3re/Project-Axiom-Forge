@@ -11,17 +11,18 @@
  */
 import { useEffect, useRef } from 'react';
 import { WorldRenderer } from '../renderer';
-import type { DecodedFrame } from '../../engine/protocol';
+import type { DecodedEntityFrame, DecodedFieldFrame } from '../../engine/protocol';
 
 interface WorldViewProps {
-  frameRef: React.RefObject<DecodedFrame | null>;
+  entityFrameRef: React.RefObject<DecodedEntityFrame | null>;
+  fieldFrameRef: React.RefObject<DecodedFieldFrame | null>;
   className?: string;
 }
 
 const ZOOM_MIN = 0.1;  // 10× zoom in
 const ZOOM_MAX = 1.0;  // full world view — can't zoom out past this
 
-export function WorldView({ frameRef, className = '' }: WorldViewProps) {
+export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: WorldViewProps) {
   const wrapRef     = useRef<HTMLDivElement>(null);
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<WorldRenderer | null>(null);
@@ -69,10 +70,16 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
     const loop = (ms: number) => {
       const r = rendererRef.current;
       if (r) {
-        const f = frameRef.current;
-        if (f) {
-          r.updateFrame(f);
-          (frameRef as React.MutableRefObject<DecodedFrame | null>).current = null;
+        const fieldFrame = fieldFrameRef.current;
+        if (fieldFrame) {
+          r.updateFieldFrame(fieldFrame);
+          (fieldFrameRef as React.MutableRefObject<DecodedFieldFrame | null>).current = null;
+        }
+
+        const entityFrame = entityFrameRef.current;
+        if (entityFrame) {
+          r.updateEntityFrame(entityFrame);
+          (entityFrameRef as React.MutableRefObject<DecodedEntityFrame | null>).current = null;
         }
         r.render(ms);
       }
@@ -80,7 +87,7 @@ export function WorldView({ frameRef, className = '' }: WorldViewProps) {
     };
     rafId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafId);
-  }, [frameRef]);
+  }, [entityFrameRef, fieldFrameRef]);
 
   // Zoom / pan via unified Pointer Events + wheel
   useEffect(() => {

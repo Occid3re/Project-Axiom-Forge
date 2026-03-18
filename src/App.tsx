@@ -6,7 +6,13 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { decodeFrame, type DecodedFrame, type ServerMeta } from './engine/protocol';
+import {
+  decodeEntityFrame,
+  decodeFieldFrame,
+  type DecodedEntityFrame,
+  type DecodedFieldFrame,
+  type ServerMeta,
+} from './engine/protocol';
 import { WorldView } from './ui/components/WorldView';
 import { EmergenceLadder, detectEmergence, type EmergenceState } from './ui/components/EmergenceLadder';
 import { TransmissionLog } from './ui/components/TransmissionLog';
@@ -84,7 +90,8 @@ export default function App() {
 
   // Frame stored in a ref — bypasses React state so the RAF render loop
   // in WorldView reads it directly without triggering re-renders.
-  const frameRef = useRef<DecodedFrame | null>(null);
+  const entityFrameRef = useRef<DecodedEntityFrame | null>(null);
+  const fieldFrameRef = useRef<DecodedFieldFrame | null>(null);
   const [meta, setMeta]           = useState<ServerMeta | null>(null);
   const [connected, setConnected] = useState(false);
   const [log, setLog]             = useState<string[]>(['Connecting to Axiom Forge...']);
@@ -137,9 +144,14 @@ export default function App() {
     socket.on('connect',    () => { setConnected(true);  addLog('Connection established — observing simulation'); });
     socket.on('disconnect', () => { setConnected(false); addLog('Connection lost — reconnecting...'); });
 
-    socket.on('frame', (buf: ArrayBuffer) => {
-      const decoded = decodeFrame(buf);
-      if (decoded) frameRef.current = decoded; // goes directly to RAF loop
+    socket.on('entities', (buf: ArrayBuffer) => {
+      const decoded = decodeEntityFrame(buf);
+      if (decoded) entityFrameRef.current = decoded;
+    });
+
+    socket.on('fields', (buf: ArrayBuffer) => {
+      const decoded = decodeFieldFrame(buf);
+      if (decoded) fieldFrameRef.current = decoded;
     });
 
     socket.on('meta', (m: ServerMeta) => {
@@ -236,7 +248,11 @@ export default function App() {
           <div className="absolute inset-0 bg-[#070809]">
             {viewMode === 'simulation' ? (
               <>
-                <WorldView frameRef={frameRef} className="w-full h-full" />
+                <WorldView
+                  entityFrameRef={entityFrameRef}
+                  fieldFrameRef={fieldFrameRef}
+                  className="w-full h-full"
+                />
 
                 {/* Extinction banner */}
                 {meta && pop === 0 && (

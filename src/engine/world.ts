@@ -92,6 +92,7 @@ export class World {
   private readonly dirEnt    = new Float64Array(4);
   private readonly dirGlyph  = new Float64Array(4);
   private readonly dirCount  = new Int32Array(4);
+  private readonly processOrder = new Int32Array(MAX_ENTITIES);
 
   constructor(laws: WorldLaws, config: WorldConfig, seed: number) {
     this.laws   = laws;
@@ -326,7 +327,7 @@ export class World {
     const n = entities.count;
 
     // Shuffled processing order — prevents position-based bias
-    const order = new Int32Array(n);
+    const order = this.processOrder;
     for (let i = 0; i < n; i++) order[i] = i;
     for (let i = n - 1; i > 0; i--) {
       const j = rng.int(0, i);
@@ -370,6 +371,7 @@ export class World {
       const { dirRes, dirEnt, dirGlyph, dirCount } = this;
       dirRes.fill(0); dirEnt.fill(0); dirGlyph.fill(0); dirCount.fill(0);
       let nCount = 0;
+      let kinCount = 0;
 
       for (let dy0 = -2; dy0 <= 2; dy0++) {
         for (let dx0 = -2; dx0 <= 2; dx0++) {
@@ -382,7 +384,14 @@ export class World {
           dirCount[dir]++;
           const nIdx = ny0 * gridW + nx0;
           dirRes[dir] += this.resources[nIdx];
-          if (this.entityMap[nIdx] >= 0) { dirEnt[dir]++; nCount++; }
+          const neighbor = this.entityMap[nIdx];
+          if (neighbor >= 0) {
+            dirEnt[dir]++;
+            nCount++;
+            if (this.entities.alive[neighbor] && this.genomeSimilarity(i, neighbor) >= kinThresh) {
+              kinCount++;
+            }
+          }
           // Glyph magnitude at neighbour cell
           const gBase = nIdx * GLYPH_CHANNELS;
           let gMag = 0;
@@ -401,9 +410,9 @@ export class World {
         }
       }
 
-      // Cooperation: energy bonus per neighbour (direction-agnostic approximation)
-      if (coopBonus > 0 && nCount > 0) {
-        entities.energy[i] += coopBonus * Math.min(nCount, crowdThresh);
+      // Cooperation is kin-selective: only similar neighbours contribute.
+      if (coopBonus > 0 && kinCount > 0) {
+        entities.energy[i] += coopBonus * Math.min(kinCount, crowdThresh);
         const cap = laws.energyCap ?? 1.5;
         if (entities.energy[i] > cap) entities.energy[i] = cap;
       }
@@ -425,7 +434,7 @@ export class World {
         case ActionType.EAT:       this.executeEat(i);          break;
         case ActionType.REPRODUCE: this.executeReproduce(i);    break;
         case ActionType.SIGNAL:    this.executeSignal(i);       break;
-        case ActionType.ATTACK:    this.executeAttack(i);       break;
+        case ActionType.ATTACK:    this.executeAttack(i, kinThresh); break;
         case ActionType.DEPOSIT:   this.executeDeposit(i);      break;
         case ActionType.ABSORB:    this.executeAbsorb(i);       break;
         // IDLE: do nothing
@@ -645,8 +654,8 @@ export class World {
     this.tickSignals++;
   }
 
-  private executeAttack(i: number): void {
-    const { entities, laws, rng, gridW, gridH, entityMap } = this;
+  private executeAttack(i: number, kinThresh: number): void {
+    const { entities, laws, gridW, gridH, entityMap } = this;
     const ox = entities.x[i];
     const oy = entities.y[i];
 
@@ -658,14 +667,16 @@ export class World {
         const nx2 = ((ox + dx2) % gridW + gridW) % gridW;
         const ny2 = ((oy + dy2) % gridH + gridH) % gridH;
         const d   = Math.abs(dx2) + Math.abs(dy2);
-        if (entityMap[ny2 * gridW + nx2] >= 0 && d < minDist) {
+        const target = entityMap[ny2 * gridW + nx2];
+        if (target < 0 || !entities.alive[target]) continue;
+        if (this.genomeSimilarity(i, target) >= kinThresh) continue;
+        if (d < minDist) {
           minDist = d; tdx = dx2; tdy = dy2;
         }
       }
     }
 
-    if (minDist === 99) { tdx = rng.int(-1, 1); tdy = rng.int(-1, 1); }
-    if (tdx === 0 && tdy === 0) return;
+    if (minDist === 99 || (tdx === 0 && tdy === 0)) return;
 
     const nx     = ((ox + tdx) % gridW + gridW) % gridW;
     const ny     = ((oy + tdy) % gridH + gridH) % gridH;

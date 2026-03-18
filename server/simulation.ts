@@ -75,6 +75,7 @@ const DISPLAY_CONFIG = {
   gridSize:        256,
   initialEntities: 400,  // fix density mismatch: eval is 50/(64²)=0.012; 400/(256²)=0.006 ≈ half
   minLifetimeTicks: 240,
+  fieldFrameInterval: 6, // 30fps entities, 5fps field refresh
 };
 
 // ── Worker pool ──────────────────────────────────────────────────────────────
@@ -131,18 +132,18 @@ class WorkerPool {
 //   aggression255: W2 ATTACK column (a=8)  → how strongly this network attacks
 //   species255:    W2 SIGNAL column (a=7) + W2 EAT column (a=5) → behaviour fingerprint
 
-export function packFrame(world: World, tick: number): ArrayBuffer {
+export function packFieldFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
   const { gridW: W, gridH: H, entityCount, signalChannels } = vs;
   const channels   = Math.min(signalChannels, 3);
   // Layout: header(20) + resources(WH) + signals(WH×3) + poison(WH) + glyphs(WH) + entities(N×8)
-  const totalBytes = 20 + W * H + W * H * 3 + W * H + W * H + entityCount * 8;
+  const totalBytes = 20 + W * H + W * H * 3 + W * H + W * H;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
   const u8   = new Uint8Array(buf);
 
-  view.setUint32(0,  0x41584647, true); // magic "AXFG"
+  view.setUint32(0,  0x41584646, true); // magic "AXFF"
   view.setUint32(4,  W,    true);
   view.setUint32(8,  H,    true);
   view.setUint32(12, entityCount, true);
@@ -168,6 +169,7 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
     }
     u8[offset++] = Math.min(255, (Math.sqrt(mag) * 128) | 0);
   }
+  return buf;
   // X, Y, Energy, Action arrays
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityX[e] & 0xff;
   for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityY[e] & 0xff;
@@ -225,6 +227,73 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
 }
 
 // ── Meta broadcast type ─────────────────────────────────────────────────────
+
+export function packEntityFrame(world: World, tick: number): ArrayBuffer {
+  const vs = world.getVisualState();
+  const { gridW: W, gridH: H, entityCount } = vs;
+  const totalBytes = 20 + entityCount * 8;
+
+  const buf  = new ArrayBuffer(totalBytes);
+  const view = new DataView(buf);
+  const u8   = new Uint8Array(buf);
+
+  view.setUint32(0,  0x41584645, true); // magic "AXFE"
+  view.setUint32(4,  W,    true);
+  view.setUint32(8,  H,    true);
+  view.setUint32(12, entityCount, true);
+  view.setUint32(16, tick,  true);
+
+  let offset = 20;
+  for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityX[e] & 0xff;
+  for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityY[e] & 0xff;
+  for (let e = 0; e < entityCount; e++) u8[offset++] = Math.min(255, (vs.entityEnergy[e] * 255) | 0);
+  for (let e = 0; e < entityCount; e++) u8[offset++] = vs.entityAction[e];
+
+  for (let e = 0; e < entityCount; e++) {
+    let attackSum = 0;
+    for (let j = 0; j < NN_HIDDEN; j++) {
+      attackSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 8];
+    }
+    u8[offset++] = Math.round(255 / (1 + Math.exp(-attackSum * 0.4)));
+  }
+
+  for (let e = 0; e < entityCount; e++) {
+    let sigSum = 0, eatSum = 0;
+    for (let j = 0; j < NN_HIDDEN; j++) {
+      sigSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 7];
+      eatSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 5];
+    }
+    const sigTend = 1 / (1 + Math.exp(-sigSum * 0.3));
+    const eatTend = 1 / (1 + Math.exp(-eatSum * 0.3));
+    u8[offset++] = Math.round((sigTend * 0.6 + eatTend * 0.4) * 255);
+  }
+
+  for (let e = 0; e < entityCount; e++) {
+    const gOff = e * GENOME_LENGTH;
+    let sum = 0, sum2 = 0;
+    for (let g = 0; g < GENOME_LENGTH; g++) {
+      const w = vs.entityGenomes[gOff + g];
+      sum += w; sum2 += w * w;
+    }
+    const mean = sum / GENOME_LENGTH;
+    const variance = sum2 / GENOME_LENGTH - mean * mean;
+    const std = Math.sqrt(Math.max(0, variance));
+    u8[offset++] = Math.round(255 / (1 + Math.exp(-(std - 1.2) * 2.5)));
+  }
+
+  for (let e = 0; e < entityCount; e++) {
+    let moveSum = 0;
+    for (let j = 0; j < NN_HIDDEN; j++) {
+      moveSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 1]
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 2]
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 3]
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 4];
+    }
+    u8[offset++] = Math.round(255 / (1 + Math.exp(-moveSum * 0.075)));
+  }
+
+  return buf;
+}
 
 export interface MetaBroadcast {
   generation:   number;
@@ -529,7 +598,7 @@ export class SimulationController {
   }
 
   /** Step display world once. Call at ~30fps. Returns broadcast data. */
-  displayStep(): { frame: ArrayBuffer; meta: MetaBroadcast } | null {
+  displayStep(): { entities: ArrayBuffer; fields?: ArrayBuffer; meta: MetaBroadcast } | null {
     if (!this.displayWorld) {
       this.startDisplayWorld(this.bestLaws ?? starterLaws());
     }
@@ -588,7 +657,10 @@ export class SimulationController {
       sampleGenome = Array.from(world.entities.getGenome(bestIdx));
     }
 
-    const frame: ArrayBuffer = packFrame(world, this.displayTick);
+    const entities: ArrayBuffer = packEntityFrame(world, this.displayTick);
+    const fields = this.displayTick % DISPLAY_CONFIG.fieldFrameInterval === 1
+      ? packFieldFrame(world, this.displayTick)
+      : undefined;
     const meta: MetaBroadcast = {
       generation:  this.generation,
       worldIndex:  this.completedWorldsThisGen,
@@ -608,7 +680,7 @@ export class SimulationController {
       displaySeed:  this.displaySeed,
     };
     this.pendingLog = null;
-    return { frame, meta };
+    return { entities, fields, meta };
   }
 
   private log(msg: string) {

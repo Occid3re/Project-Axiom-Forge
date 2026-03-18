@@ -46,7 +46,8 @@ setInterval(() => {
   try {
     const result = sim.displayStep();
     if (!result || connectedClients === 0) return;
-    io.emit('frame', result.frame);
+    io.emit('entities', result.entities);
+    if (result.fields) io.emit('fields', result.fields);
     io.emit('meta', result.meta);
   } catch (e) {
     console.error('[display] step error (recovering):', e);
