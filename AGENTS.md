@@ -41,7 +41,7 @@ Browser (Socket.IO client)
   └─ WorldView.tsx        60fps RAF loop + pointer/wheel zoom-pan → WorldRenderer
   └─ NeuralNetView.tsx    Canvas X-ray: animated MLP graph of fittest display entity
   └─ WorldRenderer        4-pass WebGL: scene→H-blur→V-blur→composite
-  └─ EmergenceLadder      8-stage emergence detection from scores (left overlay)
+  └─ EmergenceLadder      10-stage emergence detection from scores (left overlay)
   └─ WorldLawsView        Evolved physics parameter bars (right overlay, wired)
   └─ PopulationChart      Population over time (right overlay)
 
@@ -130,7 +130,7 @@ src/ui/
   components/
     WorldView.tsx        Canvas + RAF loop + unified pointer zoom-pan
     NeuralNetView.tsx    Canvas X-ray: glowing MLP graph, particle flow, activation
-    EmergenceLadder.tsx  8-stage emergence detection + left overlay sidebar
+    EmergenceLadder.tsx  10-stage emergence detection + left overlay sidebar
     PopulationChart.tsx  Population over time chart
     TransmissionLog.tsx  Server log message feed
     WorldLawsView.tsx    Evolved physics parameter bars (wired to meta.bestLaws)
@@ -525,7 +525,7 @@ NeuralNetView fills the same canvas area as WorldView; **sidebars are hidden** w
 
 ---
 
-## Emergence Ladder (8 stages)
+## Emergence Ladder (10 stages)
 
 The left sidebar tracks observable milestones. Each stage lights up when its progress ≥ 60%.
 
@@ -536,12 +536,14 @@ The left sidebar tracks observable milestones. Each stage lights up when its pro
 | 2 | Signaling | communication | ≥ 0.12 | Fluorescent dye channels glow; signals predict births (lagged correlation) |
 | 3 | Diversity | diversity | ≥ 0.15 | Multiple behavioral strategies coexist; genome divergence visible |
 | 4 | Predation | interactions | ≥ 0.12 | Curved vibrio predators hunt round prey; attacks + survival coexist |
-| 5 | Speciation | speciation | ≥ 0.18 | Distinct genome clusters with gaps; different body shapes visible |
-| 6 | Ecology | geo-mean(5 metrics) | ≥ 0.15 | All of the above active simultaneously — complex ecosystem |
-| 7 | Meta-Evolution | generation acceleration | score rate increasing | Score trend accelerating across generations; physics improving |
+| 5 | Cultural Marks | stigmergicUse | ≥ 0.09 | Gold glyph marks appear on grid; entities deposit and absorb knowledge |
+| 6 | Kin Selection | socialDifferentiation | ≥ 0.12 | Entities cooperate with kin, attack strangers; tribal behavior emerges |
+| 7 | Speciation | speciation | ≥ 0.18 | Distinct genome clusters with gaps; different body shapes visible |
+| 8 | Ecology | geo-mean(7 metrics) | ≥ 0.12 | All of the above active simultaneously — complex ecosystem |
+| 9 | Meta-Evolution | generation acceleration | score rate increasing | Score trend accelerating across generations; physics improving |
 
 Stages are sequential: a stage only lights up if all previous stages are also achieved.
-`detectEmergence()` in `EmergenceLadder.tsx` computes progress[0..7] from WorldScores.
+`detectEmergence()` in `EmergenceLadder.tsx` computes progress[0..9] from WorldScores.
 
 ---
 

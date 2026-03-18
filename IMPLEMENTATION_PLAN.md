@@ -79,45 +79,45 @@ Total frame overhead: +4096 bytes (64×64) or +65536 bytes (256×256).
 ## Implementation Phases
 
 ### Phase 1: Foundation (constants, genome, entity pool, laws)
-- [ ] `constants.ts`: NN_INPUTS=10, NN_HIDDEN=10, NN_OUTPUTS=8, GENOME_LENGTH=180
-- [ ] `constants.ts`: ActionType += DEPOSIT=6, ABSORB=7
-- [ ] `constants.ts`: Add GLYPH_CHANNELS=4
-- [ ] `entity-pool.ts`: Update Xavier init for 10×10 + 10×8 dimensions
-- [ ] `world-laws.ts`: Add 5 new laws, update interface + ranges + random/starter/mutate
+- [x] `constants.ts`: NN_INPUTS=10, NN_HIDDEN=10, NN_OUTPUTS=8, GENOME_LENGTH=180
+- [x] `constants.ts`: ActionType += DEPOSIT=6, ABSORB=7
+- [x] `constants.ts`: Add GLYPH_CHANNELS=4
+- [x] `entity-pool.ts`: Update Xavier init for 10×10 + 10×8 dimensions
+- [x] `world-laws.ts`: Add 5 new laws, update interface + ranges + random/starter/mutate
 
 ### Phase 2: World engine (glyph grid, social perception, new actions)
-- [ ] `world.ts` constructor: Allocate glyphs Float32Array
-- [ ] `world.ts` step(): Add decayGlyphs() call
-- [ ] `world.ts` decideAction(): Expand to 10 inputs with social + stigmergic computation
-- [ ] `world.ts`: Add genomeSimilarity() helper
-- [ ] `world.ts`: Implement executeDeposit() and executeAbsorb()
-- [ ] `world.ts`: Update Elman hidden state handling for 10 units
-- [ ] `world.ts` snapshot(): Add deposits/absorbs counters
-- [ ] `world.ts` getVisualState(): Expose glyphs
+- [x] `world.ts` constructor: Allocate glyphs Float32Array
+- [x] `world.ts` step(): Add decayGlyphs() call
+- [x] `world.ts` decideAction(): Expand to 10 inputs with social + stigmergic computation
+- [x] `world.ts`: Add genomeSimilarity() helper
+- [x] `world.ts`: Implement executeDeposit() and executeAbsorb()
+- [x] `world.ts`: Update Elman hidden state handling for 10 units
+- [x] `world.ts` snapshot(): Add deposits/absorbs counters
+- [x] `world.ts` getVisualState(): Expose glyphs
 
 ### Phase 3: Scoring
-- [ ] `scoring.ts`: Add stigmergicUse and socialDifferentiation metrics
-- [ ] `scoring.ts`: Update WorldScores interface and scoreWorld()
+- [x] `scoring.ts`: Add stigmergicUse and socialDifferentiation metrics
+- [x] `scoring.ts`: Update WorldScores interface and scoreWorld()
 
 ### Phase 4: Server (protocol, frame packing, eval worker)
-- [ ] `simulation.ts`: STATE_VERSION → 8
-- [ ] `simulation.ts` packFrame(): Add glyph layer, update genome derivation for new sizes
-- [ ] `simulation.ts` EVAL_CONFIG.scoreWeights: Add new metric weights
-- [ ] `simulation.ts` MetaBroadcast: Update sampleGenome size comment
-- [ ] `eval-worker.ts`: Update DEFAULT_SCORE_WEIGHTS
-- [ ] `protocol.ts`: Add glyphs to DecodedFrame, update decoder offsets
-- [ ] `protocol.ts`: Update ServerMeta scores interface
+- [x] `simulation.ts`: STATE_VERSION → 8
+- [x] `simulation.ts` packFrame(): Add glyph layer, update genome derivation for new sizes
+- [x] `simulation.ts` EVAL_CONFIG.scoreWeights: Add new metric weights
+- [x] `simulation.ts` MetaBroadcast: Update sampleGenome size comment
+- [x] `eval-worker.ts`: Update DEFAULT_SCORE_WEIGHTS
+- [x] `protocol.ts`: Add glyphs to DecodedFrame, update decoder offsets
+- [x] `protocol.ts`: Update ServerMeta scores interface
 
 ### Phase 5: Client visualization
-- [ ] `renderer.ts`: Add glyph texture channel, gold/amber shader glow
-- [ ] `StatsPanel.tsx`: Add Stigmergy and Social score bars
-- [ ] `App.tsx`: Add new scores to desktop sidebar + mobile scroll
-- [ ] `WorldLawsView.tsx`: Add Stigmergy section
-- [ ] `NeuralNetView.tsx`: Update for 10-10-8 architecture
-- [ ] `EmergenceLadder.tsx`: Update for new score thresholds
+- [x] `renderer.ts`: Add glyph texture channel, gold/amber shader glow
+- [x] `StatsPanel.tsx`: Add Stigmergy and Social score bars
+- [x] `App.tsx`: Add new scores to desktop sidebar + mobile scroll
+- [x] `WorldLawsView.tsx`: Add Stigmergy section
+- [x] `NeuralNetView.tsx`: Update for 10-10-8 architecture
+- [x] `EmergenceLadder.tsx`: Update for new score thresholds
 
 ### Phase 6: Deploy
-- [ ] Build, commit, push
-- [ ] Deploy to lostuplink-prod
-- [ ] pm2 stop → rm state.json → pm2 start
-- [ ] Update AGENTS.md with new architecture docs
+- [x] Build, commit, push
+- [x] Deploy to lostuplink-prod
+- [x] pm2 stop → rm state.json → pm2 start
+- [x] Update AGENTS.md with new architecture docs

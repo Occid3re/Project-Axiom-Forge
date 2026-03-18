@@ -89,7 +89,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [log, setLog]             = useState<string[]>(['Connecting to Axiom Forge...']);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [emergence, setEmergence] = useState<EmergenceState>({ stage: -1, progress: new Array(8).fill(0) });
+  const [emergence, setEmergence] = useState<EmergenceState>({ stage: -1, progress: new Array(10).fill(0) });
   const [laws, setLaws] = useState<import('./engine/world-laws').WorldLaws | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
@@ -176,7 +176,7 @@ export default function App() {
           <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-[11px] font-medium bg-white/[0.03] border border-white/[0.05]">
             <span className="text-gray-500">Stage:</span>
             <span className="font-semibold text-cyan-400">
-              {['Replicators','Communication','External Memory','Tool Use','Abstraction','Civilization','World Engineering','Recursive Threshold'][emergence.stage]}
+              {['Survival','Resource Cycling','Signaling','Diversity','Predation','Cultural Marks','Kin Selection','Speciation','Ecology','Meta-Evolution'][emergence.stage]}
             </span>
           </div>
         )}
@@ -325,9 +325,9 @@ export default function App() {
               <div className="p-3 shrink-0">
                 <h4 className="text-[8px] uppercase tracking-[0.2em] text-gray-600 mb-1">Current Stage</h4>
                 <div className="text-xs font-semibold text-cyan-400">
-                  {['Replicators','Communication','External Memory','Tool Use','Abstraction','Civilization','World Engineering','Recursive Threshold'][emergence.stage]}
+                  {['Survival','Resource Cycling','Signaling','Diversity','Predation','Cultural Marks','Kin Selection','Speciation','Ecology','Meta-Evolution'][emergence.stage]}
                 </div>
-                <div className="text-[8px] text-gray-600 mt-0.5">Stage {emergence.stage + 1} of 8</div>
+                <div className="text-[8px] text-gray-600 mt-0.5">Stage {emergence.stage + 1} of 10</div>
               </div>
             )}
           </aside>

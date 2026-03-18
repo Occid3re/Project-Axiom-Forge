@@ -8,7 +8,7 @@ import { useMemo } from 'react';
 import type { WorldScores, GenerationResult } from '../../engine';
 
 export interface EmergenceState {
-  stage: number;       // 0-7 (index of highest achieved stage)
+  stage: number;       // 0-9 (index of highest achieved stage)
   progress: number[];  // 0-1 for each stage
 }
 
@@ -54,17 +54,33 @@ const STAGES = [
     glowColor: 'rgba(245, 158, 11, 0.4)',
   },
   {
+    name: 'Cultural Marks',
+    subtitle: 'Stigmergic memory',
+    description: 'Entities deposit internal state as glyphs and absorb them. Gold marks appear on the grid — knowledge persists beyond individual lifetimes.',
+    icon: '⬡',
+    color: '#d97706',
+    glowColor: 'rgba(217, 119, 6, 0.4)',
+  },
+  {
+    name: 'Kin Selection',
+    subtitle: 'Social differentiation',
+    description: 'Entities treat kin differently from strangers — cooperating with relatives while attacking outsiders. The seed of tribal behavior.',
+    icon: '⬢',
+    color: '#0ea5e9',
+    glowColor: 'rgba(14, 165, 233, 0.4)',
+  },
+  {
     name: 'Speciation',
     subtitle: 'Distinct species form',
     description: 'Genome clusters emerge — groups of similar creatures with gaps between them. Different body shapes visible.',
-    icon: '⬢',
+    icon: '✦',
     color: '#f97316',
     glowColor: 'rgba(249, 115, 22, 0.4)',
   },
   {
     name: 'Ecology',
     subtitle: 'Complex ecosystem',
-    description: 'Multiple species coexist with predation, signaling, diversity, and resource cycling all active simultaneously.',
+    description: 'Multiple species coexist with predation, signaling, cultural marks, kin selection, and resource cycling all active simultaneously.',
     icon: '◎',
     color: '#14b8a6',
     glowColor: 'rgba(20, 184, 166, 0.4)',
@@ -83,7 +99,7 @@ export function detectEmergence(
   scores: WorldScores | null,
   generations: GenerationResult[],
 ): EmergenceState {
-  const progress = new Array(8).fill(0);
+  const progress = new Array(10).fill(0);
 
   if (!scores) return { stage: -1, progress };
 
@@ -100,27 +116,33 @@ export function detectEmergence(
   progress[3] = Math.min(1, scores.diversity / 0.25);
 
   // Stage 4: Predation — attacks + signals coexist with survival
-  const interactionScore = (scores as any).interactions ?? 0;
-  progress[4] = Math.min(1, interactionScore / 0.2);
+  progress[4] = Math.min(1, scores.interactions / 0.2);
 
-  // Stage 5: Speciation — distinct genome clusters
-  const speciationScore = (scores as any).speciation ?? 0;
-  progress[5] = Math.min(1, speciationScore / 0.3);
+  // Stage 5: Cultural Marks — entities deposit and absorb glyphs
+  progress[5] = Math.min(1, scores.stigmergicUse / 0.15);
 
-  // Stage 6: Ecology — everything together (geometric mean of key metrics)
+  // Stage 6: Kin Selection — differential treatment of kin vs strangers
+  progress[6] = Math.min(1, scores.socialDifferentiation / 0.2);
+
+  // Stage 7: Speciation — distinct genome clusters
+  progress[7] = Math.min(1, scores.speciation / 0.3);
+
+  // Stage 8: Ecology — everything together (geometric mean of key metrics)
   const ecoMetrics = [
     scores.persistence,
     scores.diversity,
     scores.communication,
-    interactionScore,
-    speciationScore,
+    scores.interactions,
+    scores.speciation,
+    scores.stigmergicUse,
+    scores.socialDifferentiation,
   ].filter(v => v > 0);
-  if (ecoMetrics.length >= 4) {
+  if (ecoMetrics.length >= 5) {
     const geoMean = Math.pow(ecoMetrics.reduce((a, b) => a * b, 1), 1 / ecoMetrics.length);
-    progress[6] = Math.min(1, geoMean / 0.25);
+    progress[8] = Math.min(1, geoMean / 0.2);
   }
 
-  // Stage 7: Meta-Evolution — score trend accelerating across generations
+  // Stage 9: Meta-Evolution — score trend accelerating across generations
   if (generations.length >= 5) {
     const scores2 = generations.map(g => g.bestScore);
     const firstHalf = scores2.slice(0, Math.floor(scores2.length / 2));
@@ -128,12 +150,12 @@ export function detectEmergence(
     const firstRate = firstHalf.length > 1 ? (firstHalf[firstHalf.length - 1] - firstHalf[0]) / firstHalf.length : 0;
     const secondRate = secondHalf.length > 1 ? (secondHalf[secondHalf.length - 1] - secondHalf[0]) / secondHalf.length : 0;
     const accelerating = secondRate > firstRate * 1.1;
-    progress[7] = Math.min(1, accelerating ? Math.min(1, secondRate / (firstRate + 0.001)) * 0.7 : progress[6] * 0.3);
+    progress[9] = Math.min(1, accelerating ? Math.min(1, secondRate / (firstRate + 0.001)) * 0.7 : progress[8] * 0.3);
   }
 
   // Find highest achieved stage (> 0.6 threshold)
   let stage = -1;
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 10; i++) {
     if (progress[i] >= 0.6) stage = i;
     else break;
   }
@@ -180,7 +202,7 @@ export function EmergenceLadder({ emergence, tick }: EmergenceLadderProps) {
               }}
             >
               {/* Connector line */}
-              {i < 7 && (
+              {i < 9 && (
                 <div
                   className="absolute left-[22px] -top-1 w-px h-1"
                   style={{
