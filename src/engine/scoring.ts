@@ -154,7 +154,17 @@ function scoreEnvStructure(snaps: WorldSnapshot[]): number {
   if (snaps.length < 10) return 0;
   const coverage = snaps.map(s => s.resourceCoverage);
   const variance = sampleVariance(coverage);
-  return Math.min(1, variance * 20);
+  const deltas: number[] = [];
+  for (let i = 1; i < coverage.length; i++) {
+    deltas.push(Math.abs(coverage[i] - coverage[i - 1]));
+  }
+  const volatility = mean(deltas);
+  const range = Math.max(...coverage) - Math.min(...coverage);
+
+  // Resource cycling on the large display world tends to show up as subtle but sustained
+  // motion in coverage, not huge variance spikes. Combine variance, drift, and range so
+  // the score occupies a useful 0..1 range again after the carrying-capacity changes.
+  return Math.min(1, variance * 12000 + volatility * 10 + range * 1.2);
 }
 
 function scoreAdaptability(history: WorldHistory): number {

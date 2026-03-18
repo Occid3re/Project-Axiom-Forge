@@ -16,10 +16,10 @@
 - Add gzip for static assets in nginx.
 - Restore a working ESLint 9 setup with a flat config and clean `npm run lint`.
 - Reduce field bandwidth further with tile-delta field packets plus periodic keyframes.
+- Revisit score and stage thresholds after the transport, kin-selection, and carrying-capacity changes so the UI reflects the current display-world behavior again.
 
 ## Next
 
-- Revisit score and stage thresholds after the transport, kin-selection, and carrying-capacity changes to ensure the UI still reflects real emergence progress.
 - If brotli is still desired later, install an nginx build/module that includes brotli support on the VPS first.
 
 ## Review Backlog

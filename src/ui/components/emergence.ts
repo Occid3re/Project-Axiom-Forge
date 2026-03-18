@@ -5,6 +5,18 @@ export interface EmergenceState {
   progress: number[];
 }
 
+const STAGE_THRESHOLDS = {
+  survival: 0.3,
+  resourceCycling: 0.08,
+  glyphCommunication: 0.12,
+  diversity: 0.15,
+  predation: 0.12,
+  culturalMarks: 0.09,
+  kinSelection: 0.12,
+  speciation: 0.18,
+  ecology: 0.12,
+} as const;
+
 export function detectEmergence(
   scores: WorldScores | null,
   generations: GenerationResult[],
@@ -13,14 +25,14 @@ export function detectEmergence(
 
   if (!scores) return { stage: -1, progress };
 
-  progress[0] = Math.min(1, scores.persistence / 0.5);
-  progress[1] = Math.min(1, scores.envStructure / 0.25);
-  progress[2] = Math.min(1, scores.communication / 0.2);
-  progress[3] = Math.min(1, scores.diversity / 0.25);
-  progress[4] = Math.min(1, scores.interactions / 0.2);
-  progress[5] = Math.min(1, scores.stigmergicUse / 0.15);
-  progress[6] = Math.min(1, scores.socialDifferentiation / 0.2);
-  progress[7] = Math.min(1, scores.speciation / 0.3);
+  progress[0] = Math.min(1, scores.persistence / STAGE_THRESHOLDS.survival);
+  progress[1] = Math.min(1, scores.envStructure / STAGE_THRESHOLDS.resourceCycling);
+  progress[2] = Math.min(1, scores.communication / STAGE_THRESHOLDS.glyphCommunication);
+  progress[3] = Math.min(1, scores.diversity / STAGE_THRESHOLDS.diversity);
+  progress[4] = Math.min(1, scores.interactions / STAGE_THRESHOLDS.predation);
+  progress[5] = Math.min(1, scores.stigmergicUse / STAGE_THRESHOLDS.culturalMarks);
+  progress[6] = Math.min(1, scores.socialDifferentiation / STAGE_THRESHOLDS.kinSelection);
+  progress[7] = Math.min(1, scores.speciation / STAGE_THRESHOLDS.speciation);
 
   const ecoMetrics = [
     scores.persistence,
@@ -33,7 +45,7 @@ export function detectEmergence(
   ].filter(v => v > 0);
   if (ecoMetrics.length >= 5) {
     const geoMean = Math.pow(ecoMetrics.reduce((a, b) => a * b, 1), 1 / ecoMetrics.length);
-    progress[8] = Math.min(1, geoMean / 0.2);
+    progress[8] = Math.min(1, geoMean / STAGE_THRESHOLDS.ecology);
   }
 
   if (generations.length >= 5) {
