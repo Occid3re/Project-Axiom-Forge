@@ -410,8 +410,11 @@ export class WorldRenderer {
     const { gridW: W, gridH: H, entityCount } = f;
     const cells = W * H;
     const detailBoost = (f as CombinedFrame & { renderScale?: number }).renderScale ?? 1;
-    const atlasScale = detailBoost >= 2.2 ? 4 : detailBoost >= 1.3 ? 2 : 1;
-    const renderScale = 1 + (detailBoost - 1) * 0.42;
+    const veryCrowded = entityCount >= 2800;
+    const crowded = entityCount >= 1800;
+    const morphologyQuality = detailBoost >= 2.2 && !crowded ? 2 : detailBoost >= 1.3 && !veryCrowded ? 1 : 0;
+    const atlasScale = morphologyQuality >= 2 ? 4 : morphologyQuality >= 1 ? 2 : 1;
+    const renderScale = 1 + ((morphologyQuality === 0 ? Math.min(detailBoost, 1.4) : detailBoost) - 1) * 0.42;
     this.specimenBlend = 0;
     const entW = W * atlasScale;
     const entH = H * atlasScale;
@@ -484,16 +487,20 @@ export class WorldRenderer {
 
       const hue01 = speciesHue / 255;
       const phase = hue01 * Math.PI * 2 + role * Math.PI;
-      const aspect = 0.70 + 2.05 * clamp01(0.45 * motility + 0.35 * complexity + 0.20 * energy);
-      const curvature = (aggression * 2 - 1) * (0.10 + 0.42 * complexity);
-      const waveAmp = motility * (0.12 + 0.42 * (1 - energy * 0.4));
+      const aspect = morphologyQuality === 0
+        ? 0.85 + 1.15 * clamp01(0.55 * motility + 0.25 * complexity + 0.20 * energy)
+        : 0.70 + 2.05 * clamp01(0.45 * motility + 0.35 * complexity + 0.20 * energy);
+      const curvature = (aggression * 2 - 1) * (morphologyQuality === 0 ? 0.08 + 0.18 * complexity : 0.10 + 0.42 * complexity);
+      const waveAmp = morphologyQuality === 0 ? 0 : motility * (0.08 + 0.34 * (1 - energy * 0.4));
       const waveFreq = 1.4 + hue01 * 3.8 + aggression * 1.3;
-      const lobeAmp = complexity * (0.05 + 0.18 * (1 - motility));
+      const lobeAmp = morphologyQuality >= 2 ? complexity * (0.05 + 0.18 * (1 - motility)) : 0;
       const lobeFreq = 2.0 + hue01 * 4.0;
-      const taper = 0.08 + 0.40 * (0.55 * aggression + 0.45 * complexity);
-      const pinch = clamp01((energy - 0.48) * 1.1 + complexity * 0.18);
-      const skew = (hue01 * 2 - 1) * (0.08 + 0.16 * motility);
-      const contourRipple = 0.03 + complexity * 0.10 + motility * 0.04;
+      const taper = morphologyQuality === 0
+        ? 0.06 + 0.20 * (0.55 * aggression + 0.45 * complexity)
+        : 0.08 + 0.40 * (0.55 * aggression + 0.45 * complexity);
+      const pinch = clamp01((energy - 0.48) * (morphologyQuality === 0 ? 0.7 : 1.1) + complexity * (morphologyQuality === 0 ? 0.08 : 0.18));
+      const skew = (hue01 * 2 - 1) * (morphologyQuality === 0 ? 0.04 + 0.08 * motility : 0.08 + 0.16 * motility);
+      const contourRipple = morphologyQuality >= 2 ? 0.03 + complexity * 0.10 + motility * 0.04 : 0;
       const membraneRuffle = 4 + complexity * 8 + motility * 3;
       /*
 
@@ -548,7 +555,7 @@ export class WorldRenderer {
 
       // Cell size: slight growth with complexity + energy
       const cellR = (1.5 + energy * 1.2 + complexity * 0.5) * renderScale;
-      const shapeExtra = cellR * (0.45 + waveAmp * 0.9 + lobeAmp * 0.8 + Math.abs(curvature) * 0.6);
+      const shapeExtra = cellR * (morphologyQuality === 0 ? 0.25 : 0.45 + waveAmp * 0.9 + lobeAmp * 0.8 + Math.abs(curvature) * 0.6);
       const scanR = Math.ceil(cellR + shapeExtra) + 3;
 
       // Membrane thickness: thin (early) → thick ruffled (evolved)
@@ -556,11 +563,13 @@ export class WorldRenderer {
       const membraneStart = 1.0 - membraneWidth;
 
       // Internal structure: organelle count and visibility
-      const organelleStr = complexity * 0.12;
+      const organelleStr = morphologyQuality >= 2 ? complexity * 0.12 : 0;
       const organelleFreq = 1.5 + complexity * 3.0;
 
       // Flagella emerge continuously from motility and elongation, not a fixed plan.
-      const flagella = clamp01((motility - 0.22) * 1.25) * clamp01((aspect - 1.0) / 1.8) * (0.4 + complexity * 0.6);
+      const flagella = morphologyQuality >= 2
+        ? clamp01((motility - 0.22) * 1.25) * clamp01((aspect - 1.0) / 1.8) * (0.4 + complexity * 0.6)
+        : 0;
 
       for (let dy = -scanR; dy <= scanR; dy++) {
         for (let dx = -scanR; dx <= scanR; dx++) {
@@ -571,15 +580,25 @@ export class WorldRenderer {
           let ldx = dx * cosA + dy * sinA;
           let ldy = (-dx * sinA + dy * cosA) * aspect;
           ldx += curvature * ldy * ldy / Math.max(1.0, cellR * 1.4);
-          ldy -= waveAmp * Math.sin(ldx * waveFreq * 0.55 + phase);
+          if (morphologyQuality >= 1) {
+            ldy -= waveAmp * Math.sin(ldx * waveFreq * 0.55 + phase);
+          }
           const skewedLdx = ldx + skew * ldy;
           const taperedLdy = ldy * (1.0 + taper * (skewedLdx * skewedLdx) / Math.max(1.0, cellR * cellR));
-          const pixelAngle = Math.atan2(taperedLdy, skewedLdx);
           const rawR = Math.sqrt(skewedLdx * skewedLdx + taperedLdy * taperedLdy);
-          const lobeMod = 1.0 + lobeAmp * Math.cos(pixelAngle * lobeFreq + phase);
-          const pinchScale = 1.0 - pinch * Math.exp(-skewedLdx * skewedLdx * (1.2 / (cellR * cellR + 0.01)));
-          const ripple = 1.0 + contourRipple * Math.sin(pixelAngle * membraneRuffle + phase * 0.7);
-          const rr = rawR / Math.max(0.45, lobeMod * pinchScale * ripple);
+          let pixelAngle = 0;
+          let rr = rawR;
+          if (morphologyQuality >= 1) {
+            const pinchScale = 1.0 - pinch * Math.exp(-skewedLdx * skewedLdx * (1.2 / (cellR * cellR + 0.01)));
+            rr = rawR / Math.max(0.45, pinchScale);
+          }
+          if (morphologyQuality >= 2) {
+            pixelAngle = Math.atan2(taperedLdy, skewedLdx);
+            const lobeMod = 1.0 + lobeAmp * Math.cos(pixelAngle * lobeFreq + phase);
+            const pinchScale = 1.0 - pinch * Math.exp(-skewedLdx * skewedLdx * (1.2 / (cellR * cellR + 0.01)));
+            const ripple = 1.0 + contourRipple * Math.sin(pixelAngle * membraneRuffle + phase * 0.7);
+            rr = rawR / Math.max(0.45, lobeMod * pinchScale * ripple);
+          }
 
           /*
           if (plan === 2) {
@@ -642,8 +661,9 @@ export class WorldRenderer {
             presenceVal = 1.0;
           } else if (rr < cellR * membraneStart) {
             // Cytoplasm — internal organelles appear with evolution
-            const organelles = organelleStr *
-              (0.5 + 0.5 * Math.sin(skewedLdx * organelleFreq + phase) * Math.cos(taperedLdy * organelleFreq * 0.7));
+            const organelles = organelleStr > 0
+              ? organelleStr * (0.5 + 0.5 * Math.sin(skewedLdx * organelleFreq + phase) * Math.cos(taperedLdy * organelleFreq * 0.7))
+              : 0;
             ringVal     = 0.05 + organelles;
             presenceVal = 1.0;
           } else if (rr <= cellR) {
@@ -651,7 +671,7 @@ export class WorldRenderer {
             const t = (rr - cellR * membraneStart) / (cellR * membraneWidth);
             const base = Math.sin(Math.PI * t);
             // Evolved membranes get ruffles (high-frequency wobble)
-            const ruffle = complexity > 0.3
+            const ruffle = morphologyQuality >= 2 && complexity > 0.3
               ? 1.0 + complexity * 0.15 * Math.sin(pixelAngle * (6 + complexity * 10) + phase * 0.5)
               : 1.0;
             ringVal     = (0.75 + complexity * 0.20) * base * ruffle;

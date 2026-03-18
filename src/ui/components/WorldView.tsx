@@ -62,7 +62,7 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
     const observer = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      const dpr = Math.min(devicePixelRatio, 3);
+      const dpr = Math.min(devicePixelRatio, 2);
       const size = Math.min(rect.width, rect.height) * dpr;
       rendererRef.current?.resize(Math.round(size), Math.round(size));
     });
