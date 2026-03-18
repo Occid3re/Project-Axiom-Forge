@@ -310,12 +310,50 @@ On every new best score and every generation end, saves to `STATE_PATH`:
   "lastImprovementGen": N, "generationSummaries": [...], "population": [...] }
 ```
 Loaded on startup (version check). Survives redeploys because the file is outside `server/`.
-**STATE_VERSION=5** — incremented when scoring semantics or WorldLaws shape change.
+**STATE_VERSION=6** — incremented when scoring semantics or WorldLaws shape change.
+
+### WorldLaws — Full Parameter Table (33 evolvable parameters)
+
+| Category | Parameter | Range | Starter | What it does |
+|---|---|---|---|---|
+| Reproduction | reproductionCost | 0.1–1.0 | 0.28 | Energy cost to reproduce |
+| | offspringEnergy | 0.05–0.8 | 0.20 | Starting energy of children |
+| | mutationRate | 0.01–0.5 | 0.06 | Per-weight mutation probability |
+| | mutationStrength | 0.01–0.3 | 0.06 | Gaussian noise std |
+| | sexualReproduction | bool | true | Crossover vs asexual |
+| | spawnDistance | 1–4 | 1 | Offspring placement range (colonial vs dispersal) |
+| Energy | resourceRegenRate | 0.001–0.1 | 0.028 | Resource regrowth per tick |
+| | eatGain | 0.1–1.0 | 0.42 | Energy per EAT action |
+| | moveCost | 0.001–0.1 | 0.007 | Energy per MOVE (×moveSpeed) |
+| | idleCost | 0.001–0.05 | 0.004 | Baseline energy drain |
+| | energyCap | 0.5–3.0 | 1.5 | Max energy (tanky vs fragile) |
+| | corpseEnergy | 0.1–1.0 | 0.50 | Fraction returned to grid on death |
+| | agingRate | 0–0.01 | 0.002 | Extra drain per tick × age |
+| Combat | attackTransfer | 0–0.8 | 0.50 | Energy stolen per attack |
+| | attackRange | 1–3 | 1 | Attack search radius (ranged vs melee) |
+| | moveSpeed | 1–3 | 1 | Cells per MOVE action |
+| Communication | signalRange | 1–8 | 4 | Signal broadcast radius |
+| | signalChannels | 1–6 | 3 | Frequency channels |
+| | signalDecay | 0.1–0.99 | 0.80 | Per-tick signal multiplier |
+| | signalCost | 0–0.05 | 0.01 | Energy per SIGNAL action |
+| Social | cooperationBonus | 0–0.15 | 0.03 | Energy bonus per neighbor (herding) |
+| | crowdingThreshold | 1–6 | 3 | Neighbors before overcrowding penalty |
+| Memory | memorySize | 1–16 | 4 | Hidden units preserved |
+| | memoryPersistence | 0–1 | 0.65 | Elman recurrent blend factor |
+| Environment | resourceDistribution | 0–2 | CLUSTERED | Uniform/Clustered/Gradient |
+| | disasterProbability | 0–0.05 | 0.003 | Per-tick disaster chance |
+| | terrainVariability | 0–1 | 0.65 | Landscape roughness |
+| | driftSpeed | 0–0.4 | 0.05 | Environmental current strength |
+| Poison | poisonStrength | 0–0.3 | 0.05 | Damage per tick at full concentration |
+| | deathToxin | 0–0.8 | 0.25 | Poison deposited per death |
+| Other | maxPerceptionRadius | 1–6 | 3 | (currently unused) |
+| | maxAge | 200–800 | 300 | Hard lifespan limit |
+| | carryingCapacity | 0.02–0.30 | 0.10 | Sustainable cell fraction |
 
 ### Poison & Server Pressure
 
 **Poison grid** (`Float32Array[gridSize²]`):
-- Dying entities deposit `deathToxin` (0–0.8) poison at their cell
+- Dying entities deposit `deathToxin` poison at their cell
 - Poison damages living entities: `energy -= poison × poisonStrength` per tick
 - Poison suppresses local resource regen: effective capacity × `(1 - poison×0.5)`
 - Decays at ~0.5%/tick (base), slower under server pressure
@@ -323,19 +361,10 @@ Loaded on startup (version check). Survives redeploys because the file is outsid
 
 **Server pressure** (display world only):
 - `pressure = clamp((displayStepMs - 33) / 33, 0, 2)`
-- At 33ms target (30fps), a 60ms tick → pressure ≈ 0.82
-- Effects at pressure > 0:
-  - Resource regen ×`1/(1 + pressure×0.5)` — up to 50% slower
-  - Poison decay slower: `0.995 - pressure×0.01` (more persistent dead zones)
-  - Disaster probability ×`(1 + pressure×3)` — up to 7× more disasters
-  - Energy costs +`pressure×0.003` per tick per entity
-- Self-regulating: heavy populations → slow ticks → harsh world → population drops → server recovers
-- Pressure indicator shown in bottom status bar when active (>5%)
+- Effects: slower regen, persistent poison, more disasters, higher energy costs
+- Self-regulating feedback loop: heavy populations → slow server → harsh world → culls population
 
-**WorldLaws** (evolvable):
-- `poisonStrength`: 0.0–0.3 (damage per tick at full concentration)
-- `deathToxin`: 0.0–0.8 (poison deposited per death)
-- Starter: poisonStrength=0.05, deathToxin=0.25
+**Drift**: slowly rotating environmental current (`driftSpeed`). Each tick, entities have a probability-based chance of being pushed 1 cell in the current direction. Direction rotates at `tick × 0.003` radians.
 
 ---
 
