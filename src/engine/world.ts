@@ -218,13 +218,13 @@ export class World {
     }
 
     // Carrying-capacity "air" pressure — O(1), applied inline below.
-    // Soft zone: gentle proportional drain above the evolved carryingCapacity threshold.
-    // Hard cap at 2048: moderate extra drain — weakest die first, population eases back down.
+    // Continuous quadratic curve: pressure ∝ (n / maxPop)².
+    // Doubling population quadruples the drain → strong self-regulating feedback.
+    // At 1× capacity pressure is tiny; at 4× it dominates metabolism.
+    // Capped at 0.2/tick so entities always have a few ticks to act.
     const maxPop      = Math.max(5, Math.round(gridW * gridH * laws.carryingCapacity));
-    const overRatio   = Math.max(0, n / maxPop - 1);
-    const airPressure = n > 2048
-      ? 0.015                                    // hard cap — sustained drain, ~100 ticks to die
-      : Math.min(0.008, overRatio * 0.002);      // soft zone — gentle negative feedback
+    const ratio       = n / maxPop;
+    const airPressure = Math.min(0.2, 0.001 * ratio * ratio);
 
     for (let oi = 0; oi < n; oi++) {
       const i = order[oi];

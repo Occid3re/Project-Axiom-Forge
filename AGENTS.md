@@ -207,13 +207,14 @@ Three layered mechanisms force competitive exclusion and prevent species accumul
    ```ts
    const maxPop      = round(gridW * gridH * laws.carryingCapacity);
    const overRatio   = max(0, n / maxPop - 1);
-   const airPressure = n > 2048
-     ? 0.015                            // hard cap — ~100 ticks to die, weakest go first
-     : min(0.008, overRatio * 0.002);   // soft zone — gentle negative feedback
+   const ratio       = n / maxPop;
+   const airPressure = Math.min(0.2, 0.001 * ratio * ratio);  // quadratic
    ```
    Applied inline in the existing entity loop — no extra passes, zero allocation.
-   - **Soft zone**: gentle proportional drain above `carryingCapacity` → negative feedback without extinction
-   - **Hard cap at 2048**: `airPressure = 0.015/tick` sustained drain; combined with `idleCost` (~0.004) total drain ≈ 0.019/tick; weakest entities die first, population drifts back under 2048
+   - **Continuous quadratic curve**: pressure ∝ (n/maxPop)² — doubling population quadruples drain
+   - At 1× capacity: ~0.001/tick (negligible). At 2×: ~0.004. At 4×: ~0.016. At 10×: 0.1/tick
+   - Combined with `idleCost` (~0.004), at 10× capacity total drain ≈ 0.104/tick → entity with 1.5 energy lives ~14 ticks; reproduction becomes unsustainable, preventing 4000+ accumulation
+   - Capped at 0.2/tick so entities always have a few ticks to eat/act
 
 3. **Local overcrowding** — each entity with >2 neighbors loses `0.04 × (neighbors − 2)` energy/tick.
 
