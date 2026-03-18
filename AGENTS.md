@@ -199,7 +199,7 @@ strength = sigmoid(mean(W2[:, 4]) * 0.3)  // SIGNAL column mean
 ### Population Pressure & Species Turnover
 Three layered mechanisms force competitive exclusion and prevent species accumulation:
 
-1. **Max age (`laws.maxAge`, 100–600 ticks)** — entities die of old age regardless of energy.
+1. **Max age (`laws.maxAge`, 200–800 ticks)** — entities die of old age regardless of energy.
    Forces generational turnover; early species can't persist indefinitely. Evolved by meta-evolution.
 
 2. **Carrying-capacity air pressure (`laws.carryingCapacity`, 0.02–0.30 of grid cells)**
@@ -208,12 +208,12 @@ Three layered mechanisms force competitive exclusion and prevent species accumul
    const maxPop      = round(gridW * gridH * laws.carryingCapacity);
    const overRatio   = max(0, n / maxPop - 1);
    const airPressure = n > 2048
-     ? 0.5                              // hard cap — mass die-off within 3 ticks
-     : min(0.04, overRatio * 0.006);    // soft zone — gradual pressure
+     ? 0.015                            // hard cap — ~100 ticks to die, weakest go first
+     : min(0.008, overRatio * 0.002);   // soft zone — gentle negative feedback
    ```
    Applied inline in the existing entity loop — no extra passes, zero allocation.
-   - **Soft zone**: proportional drain above `carryingCapacity` threshold → negative feedback
-   - **Hard cap at 2048**: `airPressure = 0.5/tick`; max energy is 1.5 → entities die in ≤3 ticks; weakest (lowest energy) die first; population crashes back below 2048 within a few ticks
+   - **Soft zone**: gentle proportional drain above `carryingCapacity` → negative feedback without extinction
+   - **Hard cap at 2048**: `airPressure = 0.015/tick` sustained drain; combined with `idleCost` (~0.004) total drain ≈ 0.019/tick; weakest entities die first, population drifts back under 2048
 
 3. **Local overcrowding** — each entity with >2 neighbors loses `0.04 × (neighbors − 2)` energy/tick.
 

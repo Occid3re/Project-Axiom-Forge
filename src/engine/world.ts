@@ -218,13 +218,13 @@ export class World {
     }
 
     // Carrying-capacity "air" pressure — O(1), applied inline below.
-    // Soft zone: proportional drain above carryingCapacity threshold.
-    // Hard cap at 2048: pressure spikes to 0.5/tick — entities die within 3 ticks.
+    // Soft zone: gentle proportional drain above the evolved carryingCapacity threshold.
+    // Hard cap at 2048: moderate extra drain — weakest die first, population eases back down.
     const maxPop      = Math.max(5, Math.round(gridW * gridH * laws.carryingCapacity));
     const overRatio   = Math.max(0, n / maxPop - 1);
     const airPressure = n > 2048
-      ? 0.5                                      // hard cap — mass die-off
-      : Math.min(0.04, overRatio * 0.006);       // soft zone — gradual pressure
+      ? 0.015                                    // hard cap — sustained drain, ~100 ticks to die
+      : Math.min(0.008, overRatio * 0.002);      // soft zone — gentle negative feedback
 
     for (let oi = 0; oi < n; oi++) {
       const i = order[oi];

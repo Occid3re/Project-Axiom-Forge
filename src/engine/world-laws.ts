@@ -73,7 +73,7 @@ const INT_RANGES: Record<string, { min: number; max: number }> = {
   signalChannels: { min: 1, max: 6 },
   memorySize: { min: 1, max: 16 },
   maxPerceptionRadius: { min: 1, max: 6 },
-  maxAge: { min: 100, max: 600 },
+  maxAge: { min: 200, max: 800 },
 };
 
 // --- Seeded PRNG (xoshiro128**) for deterministic runs ---
@@ -156,7 +156,7 @@ export function randomLaws(rng: PRNG): WorldLaws {
     disasterProbability: rng.uniform(0.0, 0.05),
     terrainVariability: rng.uniform(0.0, 1.0),
     maxPerceptionRadius: rng.int(1, 6),
-    maxAge: rng.int(100, 600),
+    maxAge: rng.int(200, 800),
     carryingCapacity: rng.uniform(0.02, 0.30),
   };
 }
