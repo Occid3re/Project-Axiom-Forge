@@ -390,11 +390,12 @@ export class WorldRenderer {
   private updateFrame(f: CombinedFrame) {
     const { gridW: W, gridH: H, entityCount } = f;
     const cells = W * H;
-    const specimenMode = Boolean((f as CombinedFrame & { specimenMode?: boolean }).specimenMode);
-    const renderScale = (f as CombinedFrame & { renderScale?: number }).renderScale ?? 1;
-    this.specimenBlend = specimenMode ? 1 : 0;
-    const entW = specimenMode ? W * 2 : W;
-    const entH = specimenMode ? H * 2 : H;
+    const detailBoost = (f as CombinedFrame & { renderScale?: number }).renderScale ?? 1;
+    const atlasScale = detailBoost >= 2.2 ? 3 : detailBoost >= 1.3 ? 2 : 1;
+    const renderScale = 1 + (detailBoost - 1) * 0.35;
+    this.specimenBlend = 0;
+    const entW = W * atlasScale;
+    const entH = H * atlasScale;
     const entCells = entW * entH;
 
     // Allocate trail if grid changed; clear it on world reset (tick goes back to 0)
@@ -418,7 +419,6 @@ export class WorldRenderer {
     const trailData8 = this._trailBuf!;
 
     // ── Trail decay ──────────────────────────────────────────────────────────
-    if (specimenMode) trail.fill(0);
     for (let i = 0; i < trail.length; i++) trail[i] *= 0.92;
 
     // ── Resource texture ─────────────────────────────────────────────────────
@@ -442,12 +442,8 @@ export class WorldRenderer {
     entData.fill(0); // clear — entities are max-blended onto clean slate
 
     for (let e = 0; e < entityCount; e++) {
-      const cx = specimenMode
-        ? Math.round((f.entityX[e] / Math.max(1, W - 1)) * Math.max(1, entW - 1))
-        : f.entityX[e];
-      const cy = specimenMode
-        ? Math.round((f.entityY[e] / Math.max(1, H - 1)) * Math.max(1, entH - 1))
-        : f.entityY[e];
+      const cx = Math.round((f.entityX[e] / Math.max(1, W - 1)) * Math.max(1, entW - 1));
+      const cy = Math.round((f.entityY[e] / Math.max(1, H - 1)) * Math.max(1, entH - 1));
       const energy = f.entityEnergy[e] / 255;
       const baseRole = f.entityAggression[e] / 255;
       const act = f.entityAction[e];
@@ -459,11 +455,9 @@ export class WorldRenderer {
       const motility   = (f.entityMotility?.[e] ?? 128) / 255;  // 0-1
 
       // Write trail — motile entities leave stronger trails
-      const ti = cy * W + cx;
-      if (!specimenMode) {
-        const trailStr = energy * (0.5 + motility * 0.5);
-        if (trail[ti] < trailStr) trail[ti] = trailStr;
-      }
+      const ti = f.entityY[e] * W + f.entityX[e];
+      const trailStr = energy * (0.5 + motility * 0.5);
+      if (trail[ti] < trailStr) trail[ti] = trailStr;
 
       // ── Body plan classification ─────────────────────────────────────
       // 10 distinct shapes from genome traits, inspired by real microorganism morphology
