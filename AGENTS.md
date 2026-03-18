@@ -293,7 +293,7 @@ When meta-evolution finds no improvement for N generations, increasingly aggress
 | 100 | Aggressive | 50% random injection, 4× mutation on survivors |
 | 200 | Hard Reset | Keep alltime best + starter variants, reseed rest fully random. Resets stagnation counter. |
 
-The hard reset at 300 gens forces the meta-evolution to re-explore the law space from scratch
+The hard reset at 200 gens forces the meta-evolution to re-explore the law space from scratch
 while preserving the best discovery so far. This prevents permanent trapping in local optima.
 
 ### Display Config (DISPLAY_CONFIG)
@@ -424,6 +424,26 @@ NeuralNetView fills the same canvas area as WorldView; **sidebars are hidden** w
 
 ---
 
+## Emergence Ladder (8 stages)
+
+The left sidebar tracks observable milestones. Each stage lights up when its progress ≥ 60%.
+
+| # | Stage | Metric | Threshold | What to look for on screen |
+|---|---|---|---|---|
+| 0 | Survival | persistence | ≥ 0.3 | Entities persist, eat, reproduce — population stays above zero |
+| 1 | Resource Cycling | envStructure | ≥ 0.15 | Resource coverage visibly fluctuates — entities reshape the agar |
+| 2 | Signaling | communication | ≥ 0.12 | Fluorescent dye channels glow; signals predict births (lagged correlation) |
+| 3 | Diversity | diversity | ≥ 0.15 | Multiple behavioral strategies coexist; genome divergence visible |
+| 4 | Predation | interactions | ≥ 0.12 | Curved vibrio predators hunt round prey; attacks + survival coexist |
+| 5 | Speciation | speciation | ≥ 0.18 | Distinct genome clusters with gaps; different body shapes visible |
+| 6 | Ecology | geo-mean(5 metrics) | ≥ 0.15 | All of the above active simultaneously — complex ecosystem |
+| 7 | Meta-Evolution | generation acceleration | score rate increasing | Score trend accelerating across generations; physics improving |
+
+Stages are sequential: a stage only lights up if all previous stages are also achieved.
+`detectEmergence()` in `EmergenceLadder.tsx` computes progress[0..7] from WorldScores.
+
+---
+
 ## Legal Pages (Austrian law)
 Four static HTML files in `public/` served by Express. Contact: Julius Szemelliker, Hainfelder Strasse 19, 3040 Neulengbach, Austria.
 
@@ -436,7 +456,7 @@ Four static HTML files in `public/` served by Express. Contact: Julius Szemellik
 **A. Environmental engineering / niche construction**
 Add a `DEPOSIT` action (ActionType = 6): entity deposits energy into the grid,
 permanently raising resource capacity at that cell. Entities that build "nests"
-support larger colonies. Implements Stage 3 (External Memory) and Stage 4 (Tool Use).
+support larger colonies. Would boost Resource Cycling and Ecology emergence stages.
 
 **B. Hebbian memory**
 Memory slots 0–7 are now used for Elman recurrent hidden state. Next step: add memory as
