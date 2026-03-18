@@ -91,9 +91,22 @@ export default function App() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [emergence, setEmergence] = useState<EmergenceState>({ stage: -1, progress: new Array(10).fill(0) });
   const [laws, setLaws] = useState<import('./engine/world-laws').WorldLaws | null>(null);
+  const [worldChangePulse, setWorldChangePulse] = useState(false);
+  const prevWIdxRef = useRef<number>(-1);
 
   const socketRef = useRef<Socket | null>(null);
   const addLog = useCallback((msg: string) => setLog(p => [...p.slice(-200), msg]), []);
+
+  // Pulse world indicator when world changes
+  useEffect(() => {
+    const currentWIdx = meta?.worldIndex ?? 0;
+    if (currentWIdx !== prevWIdxRef.current && prevWIdxRef.current !== -1) {
+      setWorldChangePulse(true);
+      const t = setTimeout(() => setWorldChangePulse(false), 1500);
+      return () => clearTimeout(t);
+    }
+    prevWIdxRef.current = currentWIdx;
+  }, [meta?.worldIndex]);
 
   // Detect emergence from latest scores
   useEffect(() => {
@@ -245,6 +258,29 @@ export default function App() {
                 <div className="text-center">
                   <div className="text-3xl mb-2 opacity-20">◌</div>
                   <div className="text-sm text-gray-400 font-mono tracking-wider">Connecting...</div>
+                </div>
+              </div>
+            )}
+
+            {/* World indicator — top center, pulses on world change */}
+            {wTot > 0 && viewMode === 'simulation' && (
+              <div
+                className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none z-20 transition-all duration-500"
+                style={{ opacity: worldChangePulse ? 1 : 0.35 }}
+              >
+                <div
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border"
+                  style={{
+                    background: worldChangePulse ? 'rgba(6,182,212,0.15)' : 'rgba(0,0,0,0.5)',
+                    borderColor: worldChangePulse ? 'rgba(6,182,212,0.6)' : 'rgba(255,255,255,0.06)',
+                    color: worldChangePulse ? '#67e8f9' : '#4b5563',
+                    boxShadow: worldChangePulse ? '0 0 12px rgba(6,182,212,0.3)' : 'none',
+                    transition: 'all 0.5s ease',
+                  }}
+                >
+                  <span style={{ color: worldChangePulse ? '#22d3ee' : '#374151' }}>⬡</span>
+                  <span>World {wIdx}</span>
+                  <span style={{ opacity: 0.4 }}>/ {wTot}</span>
                 </div>
               </div>
             )}
