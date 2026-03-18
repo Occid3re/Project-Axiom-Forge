@@ -379,7 +379,7 @@ export function NeuralNetView({ genome }: Props) {
       ref={wrapRef}
       style={{ position: 'absolute', inset: 0 }}
     >
-      <canvas ref={canvasRef} style={{ display: 'block' }} />
+      <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
     </div>
   );
 }
