@@ -38,6 +38,9 @@ export interface WorldSnapshot {
   signals: number;
   deposits: number;
   absorbs: number;
+  kinContacts: number;
+  threatContacts: number;
+  kinCooperation: number;
   poisonCoverage: number;   // fraction of cells with poison > 0.1
 }
 
@@ -82,6 +85,9 @@ export class World {
   private tickSignals  = 0;
   private tickDeposits = 0;
   private tickAbsorbs  = 0;
+  private tickKinContacts = 0;
+  private tickThreatContacts = 0;
+  private tickKinCooperation = 0;
 
   // Pre-allocated MLP scratch buffers — avoids GC pressure in the hot loop
   private readonly nnInputs  = new Float64Array(NN_INPUTS);
@@ -169,6 +175,9 @@ export class World {
     this.tickSignals  = 0;
     this.tickDeposits = 0;
     this.tickAbsorbs  = 0;
+    this.tickKinContacts = 0;
+    this.tickThreatContacts = 0;
+    this.tickKinCooperation = 0;
 
     this.decaySignals();
     this.decayPoison();
@@ -417,8 +426,12 @@ export class World {
       }
 
       // Cooperation is kin-selective: only similar neighbours contribute.
+      this.tickKinContacts += kinCount;
+      this.tickThreatContacts += Math.max(0, nCount - kinCount);
       if (coopBonus > 0 && kinCount > 0) {
-        entities.energy[i] += coopBonus * Math.min(kinCount, crowdThresh);
+        const coopCount = Math.min(kinCount, crowdThresh);
+        entities.energy[i] += coopBonus * coopCount;
+        this.tickKinCooperation += coopCount;
         const cap = laws.energyCap ?? 1.5;
         if (entities.energy[i] > cap) entities.energy[i] = cap;
       }
@@ -853,6 +866,9 @@ export class World {
       signals: this.tickSignals,
       deposits: this.tickDeposits,
       absorbs:  this.tickAbsorbs,
+      kinContacts: this.tickKinContacts,
+      threatContacts: this.tickThreatContacts,
+      kinCooperation: this.tickKinCooperation,
       poisonCoverage: poisonedCells / this.poison.length,
     };
   }

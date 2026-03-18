@@ -303,29 +303,38 @@ function scoreStigmergicUse(snaps: WorldSnapshot[]): number {
 
 /**
  * Reward worlds where entities behave differently toward kin vs non-kin.
- * Uses attack selectivity as proxy: do entities preferentially attack strangers?
- * Also considers deposit/absorb patterns — do kin share glyphs?
+ * Uses direct social counters from the world:
+ * - kinContacts: nearby kin observed during perception scans
+ * - threatContacts: nearby non-kin observed during perception scans
+ * - kinCooperation: kin neighbors that actually contributed cooperation energy
+ * - attacks: successful attacks, which are non-kin-only by world rules
  */
 function scoreSocialDifferentiation(snaps: WorldSnapshot[]): number {
   if (snaps.length < 40) return 0;
 
-  const popSnaps = snaps.filter(s => s.population > 5);
+  const popSnaps = snaps.filter(s => s.population > 5 && (s.kinContacts + s.threatContacts) > 0);
   if (popSnaps.length < 20) return 0;
 
-  // Attack rate should differ across time (indicating selective behavior)
-  // When entities are kin-selective, attack rate varies with population composition
-  const attackRates = popSnaps.map(s => s.attacks / s.population);
-  const attackVar = sampleVariance(attackRates);
+  const totalKinContacts = popSnaps.reduce((sum, s) => sum + s.kinContacts, 0);
+  const totalThreatContacts = popSnaps.reduce((sum, s) => sum + s.threatContacts, 0);
+  if (totalKinContacts < 50 || totalThreatContacts < 50) return 0;
 
-  // Deposit/absorb covariance with population — social species deposit more when crowded
-  const depositRates = popSnaps.map(s => s.deposits / s.population);
-  const depositVar = sampleVariance(depositRates);
+  const coopRate = totalKinContacts > 0
+    ? popSnaps.reduce((sum, s) => sum + s.kinCooperation, 0) / totalKinContacts
+    : 0;
+  const threatAttackRate = totalThreatContacts > 0
+    ? popSnaps.reduce((sum, s) => sum + s.attacks, 0) / totalThreatContacts
+    : 0;
 
-  // Combine: attack variability (selective predation) + deposit variability (social learning)
-  const selectivity = Math.min(1, attackVar * 50);
-  const socialLearning = Math.min(1, depositVar * 50);
+  // Reward worlds that expose entities to both kin and non-kin.
+  const exposureBalance = Math.min(totalKinContacts, totalThreatContacts) / Math.max(totalKinContacts, totalThreatContacts);
 
-  return selectivity * 0.5 + socialLearning * 0.5;
+  // Cooperation toward kin should be common; attacks on threats are rarer, so use a softer scale.
+  const cooperationScore = Math.min(1, coopRate * 1.5);
+  const aggressionScore = Math.min(1, threatAttackRate * 8);
+
+  // Selective societies do both: support kin and punish outsiders under the same physics.
+  return Math.sqrt(cooperationScore * aggressionScore) * exposureBalance;
 }
 
 // --- Utilities ---

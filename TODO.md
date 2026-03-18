@@ -24,5 +24,4 @@
 
 ## Review Backlog
 
-- Revisit social scoring after the kin behavior fix to ensure `socialDifferentiation` is measuring the intended phenomenon.
 - Decide whether signal mechanics should be made perceptible to entities again or fully repositioned as visual-only output.
