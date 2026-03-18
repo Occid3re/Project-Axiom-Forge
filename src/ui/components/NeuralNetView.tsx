@@ -306,27 +306,10 @@ interface Props {
 
 export function NeuralNetView({ genome }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const wrapRef   = useRef<HTMLDivElement>(null);
   const ptsRef    = useRef<Float32Array>(makeParticleState());
-  const prevKey   = useRef<number>(0); // detect genome identity change
+  const prevKey   = useRef<number>(0);
 
-  // Resize observer
-  useEffect(() => {
-    const wrap   = wrapRef.current;
-    const canvas = canvasRef.current;
-    if (!wrap || !canvas) return;
-    const dpr = Math.min(devicePixelRatio, 2);
-    const ro  = new ResizeObserver(entries => {
-      const r = entries[0]?.contentRect;
-      if (!r) return;
-      canvas.width  = Math.round(r.width  * dpr);
-      canvas.height = Math.round(r.height * dpr);
-    });
-    ro.observe(wrap);
-    return () => ro.disconnect();
-  }, []);
-
-  // RAF animation loop
+  // RAF loop — also handles canvas sizing so there is no ResizeObserver race
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -336,11 +319,19 @@ export function NeuralNetView({ genome }: Props) {
     let rafId: number;
 
     const loop = (ms: number) => {
+      // Keep physical canvas pixels in sync with CSS display size
+      const dpr  = Math.min(devicePixelRatio, 2);
+      const pxW  = Math.round(canvas.clientWidth  * dpr);
+      const pxH  = Math.round(canvas.clientHeight * dpr);
+      if (canvas.width !== pxW || canvas.height !== pxH) {
+        canvas.width  = pxW;
+        canvas.height = pxH;
+      }
+
       const W = canvas.width;
       const H = canvas.height;
 
       if (genome && genome.length >= 80) {
-        // Re-init particles if genome completely replaced (identity check)
         const key = genome[0] + genome[40] + genome[79];
         if (key !== prevKey.current) {
           prevKey.current = key;
@@ -366,11 +357,9 @@ export function NeuralNetView({ genome }: Props) {
   }, [genome]);
 
   return (
-    <div ref={wrapRef} className="w-full h-full">
-      <canvas
-        ref={canvasRef}
-        style={{ width: '100%', height: '100%', display: 'block' }}
-      />
-    </div>
+    <canvas
+      ref={canvasRef}
+      style={{ width: '100%', height: '100%', display: 'block' }}
+    />
   );
 }
