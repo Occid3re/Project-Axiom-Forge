@@ -391,7 +391,7 @@ export class WorldRenderer {
     const { gridW: W, gridH: H, entityCount } = f;
     const cells = W * H;
     const detailBoost = (f as CombinedFrame & { renderScale?: number }).renderScale ?? 1;
-    const atlasScale = detailBoost >= 2.2 ? 3 : detailBoost >= 1.3 ? 2 : 1;
+    const atlasScale = detailBoost >= 2.2 ? 4 : detailBoost >= 1.3 ? 2 : 1;
     const renderScale = 1 + (detailBoost - 1) * 0.35;
     this.specimenBlend = 0;
     const entW = W * atlasScale;
