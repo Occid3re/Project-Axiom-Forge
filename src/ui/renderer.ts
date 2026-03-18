@@ -116,18 +116,18 @@ const SCENE_FRAG = `
       vec3 cellCol = mix(mix(c00, c01, speciesH), mix(c10, c11, speciesH), role);
 
       vec3 brightCell = mix(vec3(0.14, 0.18, 0.22), cellCol * 0.85 + vec3(0.02), 0.72);
-      float body = presence * (1.0 - ringInt) * mix(0.10, 0.30, u_specimen);
-      float membrane = ringInt * mix(1.4, 1.05, u_specimen);
+      float body = presence * (1.0 - ringInt) * mix(0.12, 0.30, u_specimen);
+      float membrane = ringInt * mix(1.5, 1.05, u_specimen);
       color += mix(cellCol, brightCell, u_specimen) * (body + membrane);
 
       float specimenShadow = presence * (0.18 + ringInt * 0.12);
       color -= vec3(specimenShadow * 0.28 * u_specimen);
 
       float halo = presence * (1.0 - presence) * 4.0;
-      color += mix(cellCol * halo * 0.35, brightCell * halo * 0.06, u_specimen);
+      color += mix(cellCol * halo * 0.40, brightCell * halo * 0.06, u_specimen);
     }
 
-    color += vec3(0.01, 0.16, 0.05) * trail.r * 0.30 * (1.0 - u_specimen);
+    color += vec3(0.01, 0.16, 0.05) * trail.r * 0.24 * (1.0 - u_specimen);
 
     float grain = (hash(v_uv * 900.0 + u_time * 4.7) - 0.5) * 0.022;
     color += grain * mix(1.0, 0.35, u_specimen);
@@ -175,6 +175,7 @@ const COMP_FRAG = `
   uniform sampler2D u_bloom;
   uniform float u_fade;
   uniform float u_specimen;
+  uniform vec2 u_sceneTexel;
 
   void main() {
     vec2 uvc = v_uv - 0.5;
@@ -188,13 +189,20 @@ const COMP_FRAG = `
     scene.g = texture2D(u_scene, d_uv).g;
     scene.b = texture2D(u_scene, d_uv - caOff).b;
 
+    vec3 sceneN = texture2D(u_scene, d_uv + vec2(0.0, u_sceneTexel.y)).rgb;
+    vec3 sceneS = texture2D(u_scene, d_uv - vec2(0.0, u_sceneTexel.y)).rgb;
+    vec3 sceneE = texture2D(u_scene, d_uv + vec2(u_sceneTexel.x, 0.0)).rgb;
+    vec3 sceneW = texture2D(u_scene, d_uv - vec2(u_sceneTexel.x, 0.0)).rgb;
+    vec3 sceneBlur = (sceneN + sceneS + sceneE + sceneW) * 0.25;
+    vec3 sharpenedScene = max(scene + (scene - sceneBlur) * 0.28, vec3(0.0));
+
     vec3 bloom;
     bloom.r = texture2D(u_bloom, d_uv + caOff * 0.4).r;
     bloom.g = texture2D(u_bloom, d_uv).g;
     bloom.b = texture2D(u_bloom, d_uv - caOff * 0.4).b;
 
-    vec3 screenColor = 1.0 - (1.0 - scene) * (1.0 - bloom * 0.65);
-    vec3 specimenColor = scene + bloom * 0.18;
+    vec3 screenColor = 1.0 - (1.0 - sharpenedScene) * (1.0 - bloom * 0.65);
+    vec3 specimenColor = sharpenedScene + bloom * 0.18;
     vec3 color = mix(screenColor, specimenColor, u_specimen);
     color = pow(max(color, vec3(0.0)), mix(vec3(0.90), vec3(1.02), u_specimen));
 
@@ -242,6 +250,7 @@ export class WorldRenderer {
   private uSpecimenScene: WebGLUniformLocation | null = null;
   private uSpecimenComp:  WebGLUniformLocation | null = null;
   private uSpecimenBlit:  WebGLUniformLocation | null = null;
+  private uSceneTexel:    WebGLUniformLocation | null = null;
 
   // View state — pan is world UV centre (0.5, 0.5 = centred), zoom >1 = zoomed out
   private viewPanX = 0.5;
@@ -326,9 +335,11 @@ export class WorldRenderer {
     gl.uniform1i(gl.getUniformLocation(this.compP, 'u_bloom'), 1);
     this.uFadeComp = gl.getUniformLocation(this.compP, 'u_fade');
     this.uSpecimenComp = gl.getUniformLocation(this.compP, 'u_specimen');
+    this.uSceneTexel = gl.getUniformLocation(this.compP, 'u_sceneTexel');
     this.uFadeBlit = gl.getUniformLocation(this.blitP,  'u_fade');
     this.uSpecimenBlit = gl.getUniformLocation(this.blitP, 'u_specimen');
     gl.uniform1f(this.uSpecimenComp, 0.0);
+    gl.uniform2f(this.uSceneTexel, 1 / 1024, 1 / 1024);
     gl.useProgram(this.blitP);
     gl.uniform1f(this.uSpecimenBlit, 0.0);
 
@@ -392,7 +403,7 @@ export class WorldRenderer {
     const cells = W * H;
     const detailBoost = (f as CombinedFrame & { renderScale?: number }).renderScale ?? 1;
     const atlasScale = detailBoost >= 2.2 ? 4 : detailBoost >= 1.3 ? 2 : 1;
-    const renderScale = 1 + (detailBoost - 1) * 0.35;
+    const renderScale = 1 + (detailBoost - 1) * 0.42;
     this.specimenBlend = 0;
     const entW = W * atlasScale;
     const entH = H * atlasScale;
@@ -750,6 +761,7 @@ export class WorldRenderer {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.fboBlurB.tex);
     gl.uniform1f(this.uFadeComp, this.fadeValue);
     gl.uniform1f(this.uSpecimenComp, this.specimenBlend);
+    gl.uniform2f(this.uSceneTexel, 1 / Math.max(1, cw), 1 / Math.max(1, ch));
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 

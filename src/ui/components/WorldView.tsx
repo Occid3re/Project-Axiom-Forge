@@ -24,10 +24,13 @@ function wrap01(value: number) {
 }
 
 function zoomDetailBoost(zoom: number) {
-  if (zoom > 0.55) return 1;
-  if (zoom > 0.28) return 1.4;
-  if (zoom > 0.14) return 1.9;
-  return 2.5;
+  if (zoom > 0.48) return 1.4;
+  if (zoom > 0.18) return 2.2;
+  return 2.8;
+}
+
+function atlasLabel(boost: number) {
+  return boost >= 2.2 ? '4x' : '2x';
 }
 
 export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: WorldViewProps) {
@@ -221,7 +224,7 @@ export function WorldView({ entityFrameRef, fieldFrameRef, className = '' }: Wor
           Zoom for more detail
         </div>
         <div className="mt-1 text-xs leading-snug text-white/70">
-          Entity atlas {detailBoost.toFixed(1)}x · scroll deeper than before
+          Entity atlas {atlasLabel(detailBoost)} · deep zoom increases morphology detail
         </div>
       </div>
     </div>
