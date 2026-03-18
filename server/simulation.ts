@@ -398,6 +398,7 @@ export class SimulationController {
     while (this.population.length < EVAL_CONFIG.worldsPerGeneration) {
       this.population.push(mutateLaws(survivors[0].laws, this.evalRng, EVAL_CONFIG.mutationStrength * 1.5));
     }
+    this.population = this.population.slice(0, EVAL_CONFIG.worldsPerGeneration);
 
     this.generation++;
     this.saveState();
