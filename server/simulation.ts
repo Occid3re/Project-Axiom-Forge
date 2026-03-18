@@ -131,7 +131,8 @@ export function packFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
   const { gridW: W, gridH: H, entityCount, signalChannels } = vs;
   const channels   = Math.min(signalChannels, 3);
-  const totalBytes = 20 + W * H + W * H * channels + W * H + entityCount * 8;
+  // Always allocate 3 signal bytes per cell (write loop pads missing channels with 0)
+  const totalBytes = 20 + W * H + W * H * 3 + W * H + entityCount * 8;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);

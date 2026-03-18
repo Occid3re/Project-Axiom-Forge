@@ -68,10 +68,10 @@ const SCENE_FRAG = `
     color += vec3(0.10, 0.20, 0.03) * r * r * 1.4 * pulse;
 
     // Poison — toxic magenta-red glow, pulsing faintly
-    float poisonF = poison / 255.0;
+    // poison is already 0-1 (GPU normalizes the uint8 texture)
     float poisonPulse = 0.85 + 0.15 * sin(u_time * 1.2 + wuv.x * 13.0 + wuv.y * 11.0);
-    color += vec3(0.45, 0.02, 0.18) * poisonF * poisonF * poisonPulse * 0.7;
-    color += vec3(0.20, 0.0, 0.08) * poisonF * 0.3;
+    color += vec3(0.45, 0.02, 0.18) * poison * poison * poisonPulse * 0.7;
+    color += vec3(0.20, 0.0, 0.08) * poison * 0.3;
 
     // Chemical signal fluorescence — three dye channels (subtle, not lightning)
     float sigR = sig.r * sig.r;  // square for softer falloff — only bright when strong
