@@ -3,15 +3,18 @@
  * Runs the grid-based world with entities, resources, signals.
  * All hot-path operations use typed arrays — no object allocation per tick.
  *
- * Decision making: each entity runs a tiny MLP each tick:
+ * Decision making: each entity runs an Elman recurrent network each tick:
  *   inputs  = [localResource, energyNorm, entityDensity, signalStrength]
- *   hidden  = tanh(W1 · inputs)     (8 units, W1 = genome[0..31])
- *   logits  = W2 · hidden            (6 action logits, W2 = genome[32..79])
+ *   h_new   = tanh(W1 · inputs)          (8 units, W1 = genome[0..31])
+ *   h_blend = (1-p) * h_new + p * h_prev (p = memoryPersistence; h_prev from entity memory)
+ *   logits  = W2 · h_blend               (6 action logits, W2 = genome[32..79])
  *   action  = softmax_sample(logits)
+ *
+ * Corpse ecology: dead entities return half their energy to the resource grid.
  */
 
 import { GENOME_LENGTH, ActionType, ResourceDist, MAX_MEMORY_SIZE,
-         NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE } from './constants';
+         NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE, MAX_ENTITIES } from './constants';
 import { EntityPool } from './entity-pool';
 import { PRNG } from './world-laws';
 import type { WorldLaws } from './world-laws';
@@ -323,6 +326,20 @@ export class World {
       );
     }
 
+    // Recurrent memory: blend new hidden state with previous (Elman network).
+    // memoryPersistence controls how much of the previous hidden state carries over.
+    // At 0 → purely reactive; at 1 → frozen hidden state. Evolved by meta-evolution.
+    const persistence = laws.memoryPersistence;
+    if (persistence > 0) {
+      const mOff = i * MAX_MEMORY_SIZE;
+      for (let j = 0; j < NN_HIDDEN; j++) {
+        h[j] = h[j] * (1 - persistence) + entities.memory[mOff + j] * persistence;
+      }
+      for (let j = 0; j < NN_HIDDEN; j++) {
+        entities.memory[mOff + j] = h[j];
+      }
+    }
+
     // W2 forward pass: logits[a] = Σ_h genome[32 + h * 6 + a] * hidden[h]
     const logits = this.nnLogits;
     for (let a = 0; a < NN_OUTPUTS; a++) {
@@ -510,8 +527,18 @@ export class World {
   }
 
   private killEntity(i: number): void {
-    const { entities, entityMap, gridW } = this;
-    entityMap[entities.y[i] * gridW + entities.x[i]] = -1;
+    const { entities, entityMap, gridW, resources, resourceCapacity } = this;
+    const cellIdx = entities.y[i] * gridW + entities.x[i];
+
+    // Corpse ecology: dead entities deposit half their energy back into the grid.
+    // Creates scavenging dynamics — battlefields become resource hotspots,
+    // mass die-offs trigger resource booms, and death feeds life.
+    const deposit = entities.energy[i] * 0.5;
+    if (deposit > 0) {
+      resources[cellIdx] = Math.min(resourceCapacity[cellIdx], resources[cellIdx] + deposit);
+    }
+
+    entityMap[cellIdx] = -1;
     entities.kill(i);
     this.tickDeaths++;
   }

@@ -5,7 +5,7 @@
 A **live meta-evolution simulation** deployed at https://lostuplink.com.
 
 The server runs a two-level evolutionary system 24/7:
-- **Inner evolution**: entities with 80-weight MLP genomes eat, reproduce, signal, and attack inside a physics world — all behaviour is emergent from the neural network weights
+- **Inner evolution**: entities with 80-weight Elman recurrent network genomes eat, reproduce, signal, and attack inside a physics world — all behaviour is emergent from the neural network weights + temporal memory
 - **Outer (meta) evolution**: the *laws of physics* themselves evolve across generations to find universes where complex life spontaneously emerges
 
 All visitors see the **same shared simulation** via Socket.IO binary frames. No user input — purely read-only observation. The client renders with WebGL (4-pass bloom pipeline) and includes an X-ray neural-network visualizer.
@@ -155,14 +155,14 @@ deploy.sh                      Full build + SSH tar upload + PM2 restart
 | signalRange | 1–8 | How far signals propagate |
 | signalChannels | 1–6 | Independent signal channels |
 | signalDecay | 0.1–0.99 | How fast signals fade |
-| memorySize | 1–16 | Entity memory slots (allocated but not read in MLP) |
-| memoryPersistence | 0–1 | Memory decay per tick |
+| memorySize | 1–16 | Entity memory slots (first 8 used for recurrent hidden state) |
+| memoryPersistence | 0–1 | Hidden-state carry-over: 0 = reactive, 1 = frozen memory |
 | disasterProbability | 0–0.05 | Chance of resource wipe per tick |
 | maxPerceptionRadius | 1–6 | Sensing radius (used for density input; not gene-gated) |
 | terrainVariability | 0–1 | Spatial variation in resource capacity |
 | attackTransfer | 0–0.8 | Fraction of victim energy transferred to attacker |
 
-### Entity Genome — MLP weights (GENOME_LENGTH = 80)
+### Entity Genome — Elman Recurrent Network (GENOME_LENGTH = 80)
 
 Genome = 80 real-valued float weights (NOT clamped to [0,1]):
 ```
@@ -172,11 +172,17 @@ W2[32..79]: 8 hidden × 6 outputs — genome[32 + hidden * 6 + action]
 
 **Forward pass** (every tick, every entity, zero allocation):
 ```ts
-inputs = [localResource, energyNorm, entityDensity, signalStrength]  // all 0–1
-hidden[h] = tanh(Σ_k W1[k*8+h] * inputs[k])                         // 8 units
-logits[a] = Σ_h W2[32 + h*6 + a] * hidden[h]                         // 6 values
-action    = softmax_sample(logits)
+inputs  = [localResource, energyNorm, entityDensity, signalStrength]  // all 0–1
+h_new   = tanh(Σ_k W1[k*8+h] * inputs[k])                            // 8 units
+h_blend = (1-p) * h_new + p * h_prev                                  // p = memoryPersistence
+logits  = Σ_h W2[32 + h*6 + a] * h_blend[h]                           // 6 values
+action  = softmax_sample(logits)
+h_prev  = h_blend                                                      // stored in memory[0..7]
 ```
+Previous hidden state stored in entity memory slots 0–7. This makes each entity an Elman
+recurrent network — it can condition decisions on temporal context (recent threats, resource
+changes, signals). `memoryPersistence` is an evolvable world law: at 0 = purely reactive
+(feedforward MLP), at ~0.5 = half memory/half new input, at 1 = frozen hidden state.
 
 **Initialization**: Xavier normal — W1 ~ N(0, √(2/4)), W2 ~ N(0, √(2/8))
 **Mutation**: Gaussian noise `w += N(0, mutationStrength)`, soft-clamped ±6
@@ -196,6 +202,12 @@ strength = sigmoid(mean(W2[:, 4]) * 0.3)  // SIGNAL column mean
 - **SIGNAL** (4) — emit on derived channel, strength from W2 SIGNAL column
 - **ATTACK** (5) — target nearest entity; always gives kill bonus (0.45 energy)
 
+### Corpse Ecology
+Dead entities deposit **50% of their remaining energy** back into the resource grid at their cell.
+This creates emergent scavenging dynamics: battlefields become resource hotspots, mass die-offs
+trigger resource booms, and death feeds life. Entities that evolve to follow predators or
+gravitate toward high-mortality areas gain a foraging advantage.
+
 ### Population Pressure & Species Turnover
 Three layered mechanisms force competitive exclusion and prevent species accumulation:
 
@@ -207,11 +219,11 @@ Three layered mechanisms force competitive exclusion and prevent species accumul
    ```ts
    const MAX_POP     = 4096;
    const ratio       = n / MAX_POP;
-   const airPressure = Math.min(0.3, 0.00002 * Math.exp(ratio * 9));
+   const airPressure = Math.min(0.3, 0.0002 * Math.exp(ratio * 9));
    ```
    Applied inline in the existing entity loop — no extra passes, zero allocation.
-   - **Exponential curve**: negligible below 1024, noticeable at 2048, fatal above 3500
-   - n=1024 (25%): ~0.0002/tick. n=2048 (50%): ~0.0018 (~½ idleCost). n=3072 (75%): ~0.017 (~4× idleCost). n=3500 (85%): ~0.044 (~11× idleCost). n=4096 (100%): ~0.162
+   - **Exponential curve**: noticeable at 1024, painful at 2048, fatal above 2500
+   - n=1024 (25%): ~0.002/tick (~½ idleCost). n=2048 (50%): ~0.018 (~4.5× idleCost). n=2500 (61%): ~0.055 (~14× idleCost). n=3000+: capped at 0.3
    - Reproduction hard-capped at `min(4096, gridW * gridH * 0.07)` so even the large display world (256×256) can't exceed 4096
    - Capped at 0.3/tick so entities always have a tick or two to act before dying
 
