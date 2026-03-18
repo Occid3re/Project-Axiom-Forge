@@ -49,6 +49,7 @@ const SCENE_FRAG = `
   void main() {
     // World UV — zoomed/panned view, tiled with REPEAT wrap
     vec2 wuv = u_pan + (v_uv - 0.5) * u_zoom;
+    float deepZoom = 1.0 - smoothstep(0.12, 0.32, u_zoom);
 
     vec4 res   = texture2D(u_res,   wuv);
     vec4 ent   = texture2D(u_ent,   wuv);
@@ -66,6 +67,7 @@ const SCENE_FRAG = `
     float pulse = 0.92 + 0.08 * sin(u_time * 0.4 + wuv.x * 9.0 + wuv.y * 7.0);
     darkBg += vec3(0.06, 0.13, 0.02) * r * pulse;
     darkBg += vec3(0.10, 0.20, 0.03) * r * r * 1.4 * pulse;
+    darkBg += vec3(0.018, 0.022, 0.012) * deepZoom;
 
     float poisonPulse = 0.85 + 0.15 * sin(u_time * 1.2 + wuv.x * 13.0 + wuv.y * 11.0);
     darkBg += vec3(0.45, 0.02, 0.18) * poison * poison * poisonPulse * 0.7;
@@ -78,9 +80,11 @@ const SCENE_FRAG = `
     float sigR = sig.r * sig.r;
     float sigG = sig.g * sig.g;
     float sigB = sig.b * sig.b;
-    darkBg += vec3(0.85, 0.08, 0.10) * sigR * 0.5;
-    darkBg += vec3(0.02, 0.65, 0.50) * sigG * 0.45;
-    darkBg += vec3(0.60, 0.06, 0.80) * sigB * 0.40;
+    float fieldFade = 1.0 - deepZoom * 0.72;
+    darkBg += vec3(0.85, 0.08, 0.10) * sigR * 0.5 * fieldFade;
+    darkBg += vec3(0.02, 0.65, 0.50) * sigG * 0.45 * fieldFade;
+    darkBg += vec3(0.60, 0.06, 0.80) * sigB * 0.40 * fieldFade;
+    darkBg += vec3(0.02, 0.03, 0.015) * deepZoom * (sigR + sigG + sigB) * 0.2;
 
     float slideMask = smoothstep(0.02, 0.12, v_uv.x) * smoothstep(0.02, 0.12, v_uv.y)
       * smoothstep(0.02, 0.12, 1.0 - v_uv.x) * smoothstep(0.02, 0.12, 1.0 - v_uv.y);
@@ -116,18 +120,18 @@ const SCENE_FRAG = `
       vec3 cellCol = mix(mix(c00, c01, speciesH), mix(c10, c11, speciesH), role);
 
       vec3 brightCell = mix(vec3(0.14, 0.18, 0.22), cellCol * 0.85 + vec3(0.02), 0.72);
-      float body = presence * (1.0 - ringInt) * mix(0.12, 0.30, u_specimen);
-      float membrane = ringInt * mix(1.5, 1.05, u_specimen);
+      float body = presence * (1.0 - ringInt) * mix(0.12, 0.30, u_specimen) * (1.0 + deepZoom * 0.12);
+      float membrane = ringInt * mix(1.5, 1.05, u_specimen) * (1.0 + deepZoom * 0.18);
       color += mix(cellCol, brightCell, u_specimen) * (body + membrane);
 
       float specimenShadow = presence * (0.18 + ringInt * 0.12);
       color -= vec3(specimenShadow * 0.28 * u_specimen);
 
       float halo = presence * (1.0 - presence) * 4.0;
-      color += mix(cellCol * halo * 0.40, brightCell * halo * 0.06, u_specimen);
+      color += mix(cellCol * halo * (0.40 + deepZoom * 0.12), brightCell * halo * 0.06, u_specimen);
     }
 
-    color += vec3(0.01, 0.16, 0.05) * trail.r * 0.24 * (1.0 - u_specimen);
+    color += vec3(0.01, 0.16, 0.05) * trail.r * 0.24 * (1.0 - u_specimen) * fieldFade;
 
     float grain = (hash(v_uv * 900.0 + u_time * 4.7) - 0.5) * 0.022;
     color += grain * mix(1.0, 0.35, u_specimen);
