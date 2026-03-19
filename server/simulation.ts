@@ -15,10 +15,10 @@ import { Worker } from 'worker_threads';
 import { cpus } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { World, type WorldSnapshot } from '../src/engine/world.ts';
+import { World, type WorldSnapshot, type NeuralSample } from '../src/engine/world.ts';
 import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws } from '../src/engine/world-laws.ts';
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
-import { GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE, GLYPH_CHANNELS } from '../src/engine/constants.ts';
+import { ActionType, GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE, GLYPH_CHANNELS } from '../src/engine/constants.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -611,7 +611,20 @@ export interface MetaBroadcast {
   evalSpeed:    number;       // effective eval ticks/sec (across all workers)
   serverMs:     number;       // EMA of display world step time (ms)
   serverPressure: number;     // 0-2: how much the world is punishing creatures for server load
-  sampleGenome?: number[];    // 270 MLP weights of the most-energetic display entity
+  sampleNetwork?: {
+    entityId: number;
+    action: number;
+    age: number;
+    energy: number;
+    size: number;
+    kinNeighbors: number;
+    threatNeighbors: number;
+    lockTicksRemaining: number;
+    inputs: number[];
+    hidden: number[];
+    probs: number[];
+    genome: number[];
+  };
   displaySeed:  number;       // changes every time startDisplayWorld() is called
 }
 
@@ -634,6 +647,8 @@ export class SimulationController {
   private displaySeed       = 1;
   private lastFieldState: PackedFieldState | null = null;
   private lastFieldKeyframeTick = 0;
+  private focusEntityId: number | null = null;
+  private focusLockUntilTick = 0;
 
   // Shared
   bestScore = 0;
@@ -911,6 +926,43 @@ export class SimulationController {
     this.displayScores    = null;
     this.lastFieldState   = null;
     this.lastFieldKeyframeTick = 0;
+    this.focusEntityId = null;
+    this.focusLockUntilTick = 0;
+  }
+
+  private scoreFocusChallenge(sample: NeuralSample): number {
+    const actionBonus = (
+      sample.action === ActionType.ATTACK ||
+      sample.action === ActionType.REPRODUCE ||
+      sample.action === ActionType.SIGNAL ||
+      sample.action === ActionType.DEPOSIT ||
+      sample.action === ActionType.ABSORB
+    ) ? 0.05 : sample.action !== ActionType.IDLE ? 0.02 : 0;
+    return sample.focusScore + Math.min(0.08, (sample.kinNeighbors + sample.threatNeighbors) * 0.01) + actionBonus;
+  }
+
+  private chooseFocusSample(world: World): NeuralSample | null {
+    const current = this.focusEntityId !== null ? world.getNeuralSampleById(this.focusEntityId) : null;
+    const challenger = world.getTopNeuralSample();
+    if (!challenger && !current) return null;
+    if (!current) {
+      this.focusEntityId = challenger?.entityId ?? null;
+      this.focusLockUntilTick = this.displayTick + 240;
+      return challenger;
+    }
+    if (!challenger) return current;
+    if (this.displayTick < this.focusLockUntilTick) return current;
+
+    const currentScore = this.scoreFocusChallenge(current);
+    const challengerScore = this.scoreFocusChallenge(challenger);
+    if (challenger.entityId !== current.entityId && challengerScore > currentScore * 1.18) {
+      this.focusEntityId = challenger.entityId;
+      this.focusLockUntilTick = this.displayTick + 240;
+      return challenger;
+    }
+
+    this.focusLockUntilTick = this.displayTick + 120;
+    return current;
   }
 
   private packScheduledFields(world: World): ArrayBuffer | undefined {
@@ -1000,18 +1052,7 @@ export class SimulationController {
       }
     }
 
-    // Grab genome of the most-energetic entity for neural-net visualisation
-    let sampleGenome: number[] | undefined;
-    if (world.entities.count > 0) {
-      let bestEnergy = -1, bestIdx = 0;
-      for (let i = 0; i < world.entities.count; i++) {
-        if (world.entities.energy[i] > bestEnergy) {
-          bestEnergy = world.entities.energy[i];
-          bestIdx = i;
-        }
-      }
-      sampleGenome = Array.from(world.entities.getGenome(bestIdx));
-    }
+    const focusSample = this.chooseFocusSample(world);
 
     const entities: ArrayBuffer = packEntityFrame(world, this.displayTick);
     const fields = this.displayTick % DISPLAY_CONFIG.fieldFrameInterval === 1
@@ -1033,7 +1074,20 @@ export class SimulationController {
       evalSpeed:    this.evalSpeedSample,
       serverMs:     this.displayStepMs,
       serverPressure: pressure,
-      sampleGenome,
+      sampleNetwork: focusSample ? {
+        entityId: focusSample.entityId,
+        action: focusSample.action,
+        age: focusSample.age,
+        energy: focusSample.energy,
+        size: focusSample.size,
+        kinNeighbors: focusSample.kinNeighbors,
+        threatNeighbors: focusSample.threatNeighbors,
+        lockTicksRemaining: Math.max(0, this.focusLockUntilTick - this.displayTick),
+        inputs: focusSample.inputs,
+        hidden: focusSample.hidden,
+        probs: focusSample.probs,
+        genome: focusSample.genome,
+      } : undefined,
       displaySeed:  this.displaySeed,
     };
     this.pendingLog = null;

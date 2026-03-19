@@ -1,356 +1,354 @@
-/**
- * NeuralNetView — animated X-ray visualisation of the current best entity's neural network.
- *
- * Renders the 80-weight MLP:  4 inputs → 8 hidden (tanh) → 6 action logits
- *
- * Aesthetics: medical scanner / circuit board —
- *   • Dark near-black background with slow scan-line sweep
- *   • Connection lines glow cyan (positive weight) or amber (negative weight),
- *     brightness proportional to |weight|
- *   • Particles flow along each connection at speed ∝ |weight|
- *   • Node circles glow based on actual activation for a sample environment state
- *   • Output nodes show softmax probability bars (what this network prefers to do)
- */
-
 import { useEffect, useRef } from 'react';
 
-// ── Network constants (must match src/engine/constants.ts) ──────────────────
-const N_IN  = 16;
+const N_IN = 16;
 const N_HID = 10;
 const N_OUT = 11;
-const W1_SZ = N_IN * N_HID;  // 160 — genome[input * 10 + hidden]
-// W2: genome[160 + hidden * 11 + action]
+const W1_SZ = N_IN * N_HID;
+const TOTAL_CONNS = W1_SZ + N_HID * N_OUT;
 
-const INPUT_LABELS  = [
-  'Resource', 'Energy', 'Glyph', 'Age',
+const INPUT_LABELS = [
+  'Resource', 'Energy', 'Glyph', 'Signal',
   'Res↑', 'Res→', 'Res↓', 'Res←',
   'Ent↑', 'Ent→', 'Ent↓', 'Ent←',
-  'Glyph↑', 'Glyph→', 'Glyph↓', 'Glyph←',
+  'Comm↑', 'Comm→', 'Comm↓', 'Comm←',
 ];
+
 const OUTPUT_LABELS = ['Idle', '↑', '→', '↓', '←', 'Eat', 'Breed', 'Signal', 'Attack', 'Deposit', 'Absorb'];
-const INPUT_COLORS  = [
-  '#10b981', '#f59e0b', '#d97706', '#9ca3af',   // scalars
-  '#22d3ee', '#38bdf8', '#06b6d4', '#0ea5e9',   // directional resource
-  '#a78bfa', '#c084fc', '#8b5cf6', '#7c3aed',   // directional entity
-  '#fb923c', '#f97316', '#ea580c', '#c2410c',   // directional glyph
+
+const INPUT_COLORS = [
+  '#6ee7b7', '#fbbf24', '#f59e0b', '#93c5fd',
+  '#67e8f9', '#38bdf8', '#22d3ee', '#0ea5e9',
+  '#c4b5fd', '#a78bfa', '#8b5cf6', '#7c3aed',
+  '#fdba74', '#fb923c', '#f97316', '#ea580c',
 ];
+
 const OUTPUT_COLORS = [
-  '#6b7280',  // Idle
-  '#22d3ee', '#38bdf8', '#06b6d4', '#0ea5e9',  // MOVE_N/E/S/W
-  '#10b981', '#ec4899', '#8b5cf6', '#ef4444', '#d97706', '#0ea5e9',  // Eat..Absorb
+  '#6b7280',
+  '#22d3ee', '#38bdf8', '#06b6d4', '#0ea5e9',
+  '#10b981', '#ec4899', '#8b5cf6', '#ef4444', '#d97706', '#0ea5e9',
 ];
 
-const POS_COLOR = '#00e5ff';  // cyan  — positive weights
-const NEG_COLOR = '#ff6600';  // amber — negative weights
+const POS_COLOR = '#7dd3fc';
+const NEG_COLOR = '#f97316';
 
-// Canonical sample inputs for computing "typical" activations
-// [resource, energy, glyphStr, age, resN, resE, resS, resW, entN, entE, entS, entW, glyphN, glyphE, glyphS, glyphW]
-const SAMPLE = [0.4, 0.5, 0.15, 0.2,  0.3, 0.6, 0.2, 0.1,  0.2, 0.4, 0.1, 0.1,  0.1, 0.2, 0.05, 0.05];
-
-// ── Particle state (2 per connection × 270 connections = 540) ────────────────
-const TOTAL_CONNS = W1_SZ + N_HID * N_OUT; // 270
+interface SampleNetwork {
+  entityId: number;
+  action: number;
+  age: number;
+  energy: number;
+  size: number;
+  kinNeighbors: number;
+  threatNeighbors: number;
+  lockTicksRemaining: number;
+  inputs: number[];
+  hidden: number[];
+  probs: number[];
+  genome: number[];
+}
 
 function makeParticleState(): Float32Array {
-  const t = new Float32Array(TOTAL_CONNS * 2);
-  for (let i = 0; i < t.length; i++) t[i] = Math.random();
-  return t;
+  const particles = new Float32Array(TOTAL_CONNS * 2);
+  for (let i = 0; i < particles.length; i++) particles[i] = Math.random();
+  return particles;
 }
 
-// ── Forward pass ─────────────────────────────────────────────────────────────
-
-function forwardPass(g: number[]): { hidden: number[]; probs: number[] } {
-  const h = new Array<number>(N_HID);
-  for (let j = 0; j < N_HID; j++) {
-    let s = 0;
-    for (let k = 0; k < N_IN; k++) s += g[k * N_HID + j] * SAMPLE[k];
-    h[j] = Math.tanh(s);
-  }
-  const logits = new Array<number>(N_OUT).fill(0);
-  for (let a = 0; a < N_OUT; a++)
-    for (let j = 0; j < N_HID; j++) logits[a] += g[W1_SZ + j * N_OUT + a] * h[j];
-  const maxL = Math.max(...logits);
-  const exps = logits.map(l => Math.exp(l - maxL));
-  const sum  = exps.reduce((a, b) => a + b, 0);
-  return { hidden: h, probs: exps.map(e => e / sum) };
-}
-
-// Append alpha to either a #rrggbb hex string or an hsl(h,s%,l%) string.
-// Canvas API rejects appended hex digits on hsl() strings.
 function withAlpha(color: string, hexAlpha: string): string {
   if (color.startsWith('#')) return color + hexAlpha;
   const a = (parseInt(hexAlpha, 16) / 255).toFixed(2);
   return color.replace(/^hsl\(/, 'hsla(').replace(/\)$/, `, ${a})`);
 }
 
-// ── Main render function ──────────────────────────────────────────────────────
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function formatAction(action: number): string {
+  return OUTPUT_LABELS[action] ?? 'Unknown';
+}
 
 function render(
   ctx: CanvasRenderingContext2D,
-  W: number, H: number,
-  genome: number[],
-  pts: Float32Array,
+  W: number,
+  H: number,
+  sample: SampleNetwork,
+  particles: Float32Array,
   ms: number,
 ): void {
-  // Background
   ctx.fillStyle = '#02040a';
   ctx.fillRect(0, 0, W, H);
 
-  // Faint dot grid
-  ctx.fillStyle = 'rgba(0,229,255,0.025)';
-  const gs = Math.round(W * 0.025);
-  for (let x = gs; x < W; x += gs)
+  ctx.fillStyle = 'rgba(125,211,252,0.02)';
+  const gs = Math.max(14, Math.round(W * 0.025));
+  for (let x = gs; x < W; x += gs) {
     for (let y = gs; y < H; y += gs) {
       ctx.beginPath();
       ctx.arc(x, y, 0.8, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
 
-  // Slow scan line
-  const scanY = (ms * 0.018) % (H + 80) - 40;
-  const scan  = ctx.createLinearGradient(0, scanY - 40, 0, scanY + 40);
-  scan.addColorStop(0,   'transparent');
-  scan.addColorStop(0.5, 'rgba(0,229,255,0.018)');
-  scan.addColorStop(1,   'transparent');
+  const scanY = (ms * 0.015) % (H + 120) - 60;
+  const scan = ctx.createLinearGradient(0, scanY - 60, 0, scanY + 60);
+  scan.addColorStop(0, 'transparent');
+  scan.addColorStop(0.5, 'rgba(125,211,252,0.02)');
+  scan.addColorStop(1, 'transparent');
   ctx.fillStyle = scan;
-  ctx.fillRect(0, Math.max(0, scanY - 40), W, 80);
+  ctx.fillRect(0, Math.max(0, scanY - 60), W, 120);
 
-  // Node layout
-  const R      = Math.max(7, Math.min(W, H) * 0.022); // node radius
-  const padL   = W  * 0.02 + R * 4;                   // left padding  — room for input labels
-  const padR   = R  * 11;                              // right padding — room for output labels + prob bars + %
-  const LX     = [padL, (padL + W - padR) / 2, W - padR]; // hidden centred in available span
-  const margY  = H  * 0.13;
-  const usable = H  - margY * 2;
+  const R = Math.max(7, Math.min(W, H) * 0.022);
+  const padL = W * 0.02 + R * 4.6;
+  const padR = R * 12.5;
+  const layerX = [padL, (padL + W - padR) / 2, W - padR];
+  const margY = H * 0.13;
+  const usable = H - margY * 2;
 
   const nodeY = (n: number) =>
-    n === 1 ? [H / 2] :
-    Array.from({ length: n }, (_, i) => margY + (i / (n - 1)) * usable);
+    n === 1 ? [H / 2] : Array.from({ length: n }, (_, i) => margY + (i / (n - 1)) * usable);
 
-  const inY  = nodeY(N_IN);
+  const inY = nodeY(N_IN);
   const hidY = nodeY(N_HID);
   const outY = nodeY(N_OUT);
 
-  // Compute activations
   let maxW = 0.001;
-  for (const w of genome) if (Math.abs(w) > maxW) maxW = Math.abs(w);
-  const { hidden: hidAct, probs } = forwardPass(genome);
-  const bestAction = probs.indexOf(Math.max(...probs));
+  for (const w of sample.genome) {
+    const abs = Math.abs(w);
+    if (abs > maxW) maxW = abs;
+  }
 
-  // ── Connections + particles ─────────────────────────────────────────────
+  const bestAction = sample.probs.indexOf(Math.max(...sample.probs));
   let ci = 0;
 
   const drawConn = (
-    x1: number, y1: number, x2: number, y2: number,
-    w: number, pIdx: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    weight: number,
+    activity: number,
+    particleIdx: number,
   ) => {
-    const absW  = Math.abs(w);
-    const norm  = absW / maxW;
-    const color = w >= 0 ? POS_COLOR : NEG_COLOR;
-    const speed = norm * 0.013 + 0.003;
+    const norm = Math.abs(weight) / maxW;
+    const emphasis = clamp01(activity);
+    const alpha = 0.025 + norm * 0.12 + emphasis * 0.52;
+    const color = weight >= 0 ? POS_COLOR : NEG_COLOR;
 
-    // Glowing line
     ctx.save();
-    ctx.globalAlpha = norm * 0.55 + 0.04;
-    ctx.shadowBlur  = R * 2.5;
+    ctx.globalAlpha = alpha;
+    ctx.shadowBlur = R * (1.5 + emphasis * 2.2);
     ctx.shadowColor = color;
     ctx.strokeStyle = color;
-    ctx.lineWidth   = norm * 2 + 0.4;
+    ctx.lineWidth = 0.25 + norm * 0.5 + emphasis * 1.8;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
     ctx.restore();
 
-    // Advance + draw 2 particles
-    for (let p = 0; p < 2; p++) {
-      const slot = pIdx * 2 + p;
-      const t    = (pts[slot] + speed) % 1;
-      pts[slot]  = t;
+    if (emphasis < 0.14) return;
 
+    const speed = 0.002 + emphasis * 0.018;
+    for (let p = 0; p < 2; p++) {
+      const slot = particleIdx * 2 + p;
+      const t = (particles[slot] + speed) % 1;
+      particles[slot] = t;
       const px = x1 + (x2 - x1) * t;
       const py = y1 + (y2 - y1) * t;
 
       ctx.save();
-      ctx.globalAlpha = norm * 0.9 + 0.05;
-      ctx.shadowBlur  = R * 5;
+      ctx.globalAlpha = 0.12 + emphasis * 0.8;
+      ctx.shadowBlur = R * 4;
       ctx.shadowColor = color;
-      ctx.fillStyle   = '#ffffff';
+      ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(px, py, R * 0.28, 0, Math.PI * 2);
+      ctx.arc(px, py, R * (0.11 + emphasis * 0.16), 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
   };
 
-  // W1 connections
-  for (let k = 0; k < N_IN; k++)
-    for (let h = 0; h < N_HID; h++, ci++)
-      drawConn(LX[0], inY[k], LX[1], hidY[h], genome[k * N_HID + h], ci);
+  for (let k = 0; k < N_IN; k++) {
+    const inputStrength = sample.inputs[k];
+    for (let h = 0; h < N_HID; h++, ci++) {
+      const hiddenStrength = clamp01((sample.hidden[h] + 1) * 0.5);
+      const weight = sample.genome[k * N_HID + h];
+      const activity = inputStrength * hiddenStrength * (Math.abs(weight) / maxW) * 1.35;
+      drawConn(layerX[0], inY[k], layerX[1], hidY[h], weight, activity, ci);
+    }
+  }
 
-  // W2 connections
-  for (let h = 0; h < N_HID; h++)
-    for (let a = 0; a < N_OUT; a++, ci++)
-      drawConn(LX[1], hidY[h], LX[2], outY[a], genome[W1_SZ + h * N_OUT + a], ci);
-
-  // ── Nodes ───────────────────────────────────────────────────────────────
+  for (let h = 0; h < N_HID; h++) {
+    const hiddenStrength = clamp01((sample.hidden[h] + 1) * 0.5);
+    for (let a = 0; a < N_OUT; a++, ci++) {
+      const weight = sample.genome[W1_SZ + h * N_OUT + a];
+      const activity = hiddenStrength * sample.probs[a] * (Math.abs(weight) / maxW) * 1.8;
+      drawConn(layerX[1], hidY[h], layerX[2], outY[a], weight, activity, ci);
+    }
+  }
 
   const drawNode = (
-    x: number, y: number,
-    activation: number,   // [-1, 1] or [0, 1]
+    x: number,
+    y: number,
+    normalized: number,
     baseColor: string,
     label?: string,
     labelLeft?: boolean,
     isWinner?: boolean,
   ) => {
-    const act = Math.max(0, Math.min(1, (activation + 1) / 2)); // map to [0,1]
+    const act = clamp01(normalized);
 
-    // Outer glow halo
     ctx.save();
-    ctx.globalAlpha = 0.08 + act * 0.35;
-    if (isWinner) ctx.globalAlpha += 0.25;
-    ctx.shadowBlur  = R * (isWinner ? 10 : 6);
+    ctx.globalAlpha = 0.07 + act * 0.28 + (isWinner ? 0.16 : 0);
+    ctx.shadowBlur = R * (3 + act * 4 + (isWinner ? 2 : 0));
     ctx.shadowColor = baseColor;
     ctx.beginPath();
-    ctx.arc(x, y, R * 2, 0, Math.PI * 2);
+    ctx.arc(x, y, R * (1.4 + act * 0.8), 0, Math.PI * 2);
     ctx.fillStyle = baseColor;
     ctx.fill();
     ctx.restore();
 
-    // Inner filled circle
     ctx.save();
     const grad = ctx.createRadialGradient(x - R * 0.3, y - R * 0.3, R * 0.1, x, y, R);
-    grad.addColorStop(0, `rgba(255,255,255,${0.08 + act * 0.55})`);
-    grad.addColorStop(1, withAlpha(baseColor, '44'));
-    ctx.shadowBlur  = R * 3;
-    ctx.shadowColor = baseColor;
+    grad.addColorStop(0, `rgba(255,255,255,${0.10 + act * 0.45})`);
+    grad.addColorStop(1, withAlpha(baseColor, '55'));
     ctx.beginPath();
     ctx.arc(x, y, R, 0, Math.PI * 2);
-    ctx.fillStyle   = grad;
+    ctx.fillStyle = grad;
     ctx.fill();
-    ctx.strokeStyle = withAlpha(baseColor, isWinner ? 'ff' : '80');
-    ctx.lineWidth   = isWinner ? 2 : 1;
-    ctx.globalAlpha = 0.6 + act * 0.4;
+    ctx.strokeStyle = withAlpha(baseColor, isWinner ? 'ff' : '88');
+    ctx.lineWidth = isWinner ? 2 : 1;
+    ctx.globalAlpha = 0.55 + act * 0.45;
     ctx.stroke();
     ctx.restore();
 
-    // Label
     if (label) {
       ctx.save();
-      const fontSize = Math.max(9, R * 0.9);
-      ctx.font        = `${fontSize}px monospace`;
-      ctx.fillStyle   = withAlpha(baseColor, act > 0.5 ? 'ee' : '88');
-      ctx.globalAlpha = 0.75;
-      ctx.textAlign   = labelLeft ? 'right' : 'left';
+      ctx.font = `${Math.max(9, R * 0.85)}px monospace`;
+      ctx.fillStyle = withAlpha(baseColor, act > 0.45 ? 'f0' : '88');
+      ctx.globalAlpha = 0.8;
+      ctx.textAlign = labelLeft ? 'right' : 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(label, x + (labelLeft ? -R * 1.7 : R * 1.7), y);
+      ctx.fillText(label, x + (labelLeft ? -R * 1.8 : R * 1.8), y);
       ctx.restore();
     }
   };
 
-  // Input nodes
-  inY.forEach((y, k) =>
-    drawNode(LX[0], y, SAMPLE[k] * 2 - 1, INPUT_COLORS[k], INPUT_LABELS[k], true),
-  );
+  inY.forEach((y, k) => drawNode(layerX[0], y, sample.inputs[k], INPUT_COLORS[k], INPUT_LABELS[k], true));
 
-  // Hidden nodes — hue cycles through blue→purple
   hidY.forEach((y, h) => {
-    const hue   = 190 + h * 18;
-    const color = `hsl(${hue},80%,65%)`;
-    drawNode(LX[1], y, hidAct[h], color);
+    const hue = 192 + h * 16;
+    drawNode(layerX[1], y, clamp01((sample.hidden[h] + 1) * 0.5), `hsl(${hue}, 72%, 66%)`);
   });
 
-  // Output nodes + probability bars
   outY.forEach((y, a) => {
     const isWinner = a === bestAction;
-    drawNode(LX[2], y, probs[a] * 2 - 1, OUTPUT_COLORS[a], OUTPUT_LABELS[a], false, isWinner);
+    drawNode(layerX[2], y, sample.probs[a], OUTPUT_COLORS[a], OUTPUT_LABELS[a], false, isWinner);
 
-    // Probability bar
-    const barW   = Math.min(W * 0.06, R * 3.5);
-    const barH   = R * 0.55;
-    const barX   = LX[2] + R * 1.7 + (OUTPUT_LABELS[a].length * R * 0.55);
+    const barW = Math.min(W * 0.075, R * 4.3);
+    const barH = R * 0.55;
+    const barX = layerX[2] + R * 1.9 + OUTPUT_LABELS[a].length * R * 0.56;
+
     ctx.save();
-    ctx.globalAlpha = 0.55;
-    ctx.fillStyle   = OUTPUT_COLORS[a] + '1a';
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = withAlpha(OUTPUT_COLORS[a], '22');
     ctx.fillRect(barX, y - barH / 2, barW, barH);
-    ctx.fillStyle   = OUTPUT_COLORS[a];
-    ctx.shadowBlur  = isWinner ? 8 : 0;
+    ctx.fillStyle = OUTPUT_COLORS[a];
+    ctx.shadowBlur = isWinner ? 8 : 0;
     ctx.shadowColor = OUTPUT_COLORS[a];
-    ctx.fillRect(barX, y - barH / 2, barW * probs[a], barH);
-    if (isWinner) {
-      ctx.globalAlpha = 0.9;
-      ctx.font        = `bold ${Math.max(7, R * 0.7)}px monospace`;
-      ctx.textAlign   = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle   = OUTPUT_COLORS[a];
-      ctx.fillText(`${(probs[a] * 100).toFixed(0)}%`, barX + barW + R * 0.4, y);
-    }
+    ctx.fillRect(barX, y - barH / 2, barW * sample.probs[a], barH);
+    ctx.font = `${isWinner ? 'bold ' : ''}${Math.max(7, R * 0.7)}px monospace`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = isWinner ? OUTPUT_COLORS[a] : 'rgba(255,255,255,0.4)';
+    ctx.globalAlpha = isWinner ? 0.92 : 0.55;
+    ctx.fillText(`${(sample.probs[a] * 100).toFixed(0)}%`, barX + barW + R * 0.45, y);
     ctx.restore();
   });
 
-  // ── Layer headers ───────────────────────────────────────────────────────
-  const headY  = margY * 0.45;
-  const headSz = Math.max(8, R * 0.85);
+  const headY = margY * 0.45;
   ctx.save();
-  ctx.font        = `${headSz}px monospace`;
-  ctx.textAlign   = 'center';
+  ctx.font = `${Math.max(8, R * 0.82)}px monospace`;
+  ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.globalAlpha = 0.35;
-
-  ctx.fillStyle = INPUT_COLORS[0];
-  ctx.fillText('SENSORY INPUT', LX[0], headY);
-
+  ctx.globalAlpha = 0.4;
+  ctx.fillStyle = '#9ca3af';
+  ctx.fillText('LIVE INPUTS', layerX[0], headY);
   ctx.fillStyle = '#7dd3fc';
-  ctx.fillText('HIDDEN ×10', LX[1], headY);
-
+  ctx.fillText('CURRENT HIDDEN', layerX[1], headY);
   ctx.fillStyle = OUTPUT_COLORS[bestAction];
-  ctx.shadowBlur  = 6;
-  ctx.shadowColor = OUTPUT_COLORS[bestAction];
-  ctx.fillText('ACTION OUTPUT', LX[2], headY);
+  ctx.fillText('ACTION PRESSURE', layerX[2], headY);
   ctx.restore();
 
-  // ── Bottom hint ──────────────────────────────────────────────────────────
+  const panelX = W - Math.max(190, W * 0.21);
+  const panelY = Math.max(18, H * 0.08);
+  const panelW = Math.max(170, W * 0.17);
+  const panelH = Math.max(120, H * 0.18);
   ctx.save();
-  ctx.font        = `${Math.max(7, R * 0.7)}px monospace`;
-  ctx.textAlign   = 'center';
-  ctx.fillStyle   = 'rgba(0,229,255,0.18)';
-  ctx.globalAlpha = 0.6;
+  ctx.fillStyle = 'rgba(3, 7, 13, 0.78)';
+  ctx.strokeStyle = 'rgba(125,211,252,0.16)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(panelX, panelY, panelW, panelH, 12);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = `${Math.max(9, R * 0.78)}px monospace`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#7dd3fc';
+  ctx.fillText(`Specimen #${sample.entityId}`, panelX + 12, panelY + 10);
+
+  const rows = [
+    `action   ${formatAction(sample.action)} (${(sample.probs[bestAction] * 100).toFixed(0)}%)`,
+    `energy   ${sample.energy.toFixed(2)}   size ${sample.size.toFixed(2)}`,
+    `age      ${sample.age} ticks`,
+    `social   kin ${sample.kinNeighbors} / threat ${sample.threatNeighbors}`,
+    `lock     ${Math.ceil(sample.lockTicksRemaining / 30)}s`,
+  ];
+  ctx.fillStyle = 'rgba(230, 238, 245, 0.76)';
+  rows.forEach((row, idx) => {
+    ctx.fillText(row, panelX + 12, panelY + 34 + idx * 16);
+  });
+  ctx.restore();
+
+  ctx.save();
+  ctx.font = `${Math.max(7, R * 0.7)}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(148, 163, 184, 0.5)';
   ctx.fillText(
-    `cyan = positive weight  ·  amber = negative weight  ·  sample: resource=40% energy=50%`,
-    W / 2, H - margY * 0.45,
+    'weights are stable while the lock holds · brighter paths are the currently active ones',
+    W / 2,
+    H - margY * 0.45,
   );
   ctx.restore();
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
-
 interface Props {
-  genome: number[] | null;
+  sample: SampleNetwork | null;
 }
 
-export function NeuralNetView({ genome }: Props) {
-  const wrapRef   = useRef<HTMLDivElement>(null);
+export function NeuralNetView({ sample }: Props) {
+  const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const ptsRef    = useRef<Float32Array>(makeParticleState());
-  const prevKey   = useRef<number>(0);
+  const particlesRef = useRef<Float32Array>(makeParticleState());
+  const prevEntityIdRef = useRef<number>(-1);
 
-  // Sizing: immediate call + ResizeObserver so canvas buffer always matches wrapper
   useEffect(() => {
-    const wrap   = wrapRef.current;
+    const wrap = wrapRef.current;
     const canvas = canvasRef.current;
     if (!wrap || !canvas) return;
 
     const sync = () => {
       const dpr = Math.min(devicePixelRatio, 2);
-      canvas.width  = Math.round(wrap.offsetWidth  * dpr);
+      canvas.width = Math.round(wrap.offsetWidth * dpr);
       canvas.height = Math.round(wrap.offsetHeight * dpr);
     };
-    sync(); // run immediately — no async race
+
+    sync();
     const ro = new ResizeObserver(sync);
     ro.observe(wrap);
     return () => ro.disconnect();
   }, []);
 
-  // RAF animation loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -362,38 +360,36 @@ export function NeuralNetView({ genome }: Props) {
     const loop = (ms: number) => {
       const W = canvas.width;
       const H = canvas.height;
-      if (W < 4 || H < 4) { rafId = requestAnimationFrame(loop); return; }
+      if (W < 4 || H < 4) {
+        rafId = requestAnimationFrame(loop);
+        return;
+      }
 
-      if (genome && genome.length >= 270) {
-        const key = genome[0] + genome[135] + genome[269];
-        if (key !== prevKey.current) {
-          prevKey.current = key;
-          ptsRef.current  = makeParticleState();
+      if (sample && sample.genome.length >= 270) {
+        if (sample.entityId !== prevEntityIdRef.current) {
+          prevEntityIdRef.current = sample.entityId;
+          particlesRef.current = makeParticleState();
         }
-        render(ctx, W, H, genome, ptsRef.current, ms);
+        render(ctx, W, H, sample, particlesRef.current, ms);
       } else {
         ctx.fillStyle = '#02040a';
         ctx.fillRect(0, 0, W, H);
-        ctx.font         = `${Math.min(W, H) * 0.035}px monospace`;
-        ctx.fillStyle    = 'rgba(0,229,255,0.15)';
-        ctx.textAlign    = 'center';
+        ctx.font = `${Math.min(W, H) * 0.035}px monospace`;
+        ctx.fillStyle = 'rgba(125,211,252,0.16)';
+        ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('Awaiting neural network data…', W / 2, H / 2);
+        ctx.fillText('Awaiting locked specimen data…', W / 2, H / 2);
       }
+
       rafId = requestAnimationFrame(loop);
     };
 
     rafId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafId);
-  }, [genome]);
+  }, [sample]);
 
   return (
-    // position:absolute + inset:0 gives the wrapper an unambiguous size from its
-    // positioned ancestor — height:100% on a bare block canvas is unreliable on desktop
-    <div
-      ref={wrapRef}
-      style={{ position: 'absolute', inset: 0 }}
-    >
+    <div ref={wrapRef} style={{ position: 'absolute', inset: 0 }}>
       <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
     </div>
   );

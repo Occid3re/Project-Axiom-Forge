@@ -283,6 +283,19 @@ export interface ServerMeta {
   evalSpeed?: number;
   serverMs?: number;       // EMA ms per display step — server load indicator
   serverPressure?: number; // 0-2: environmental harshness from server load
-  sampleGenome?: number[]; // 270 MLP weights of the most-energetic display entity
+  sampleNetwork?: {
+    entityId: number;
+    action: number;
+    age: number;
+    energy: number;
+    size: number;
+    kinNeighbors: number;
+    threatNeighbors: number;
+    lockTicksRemaining: number;
+    inputs: number[];
+    hidden: number[];
+    probs: number[];
+    genome: number[];
+  };
   displaySeed?: number;    // changes every time the display world is restarted
 }

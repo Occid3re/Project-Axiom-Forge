@@ -55,6 +55,21 @@ export interface WorldHistory {
   postDisasterRecoveries: number;
 }
 
+export interface NeuralSample {
+  entityId: number;
+  action: number;
+  age: number;
+  energy: number;
+  size: number;
+  kinNeighbors: number;
+  threatNeighbors: number;
+  focusScore: number;
+  inputs: number[];
+  hidden: number[];
+  probs: number[];
+  genome: number[];
+}
+
 export interface WorldConfig {
   gridSize: number;
   steps: number;
@@ -1056,6 +1071,223 @@ export class World {
     }
     // Hidden units 8,9 (last pair from 5th channel slot) — leave unchanged since GLYPH_CHANNELS=4
     this.tickAbsorbs++;
+  }
+
+  private senseEntityForNetwork(i: number): {
+    localSignal: number;
+    dirRes: Float64Array;
+    dirEnt: Float64Array;
+    dirGlyph: Float64Array;
+    dirSignal: Float64Array;
+    kinNeighbors: number;
+    threatNeighbors: number;
+  } {
+    const { entities, gridW, gridH, laws } = this;
+    const kinThresh = laws.kinThreshold ?? 0.8;
+    const perceptionRadius = Math.max(1, Math.min(4, laws.maxPerceptionRadius ?? 2));
+    const cx = entities.x[i];
+    const cy = entities.y[i];
+    const dirRes = new Float64Array(4);
+    const dirEnt = new Float64Array(4);
+    const dirGlyph = new Float64Array(4);
+    const dirSignal = new Float64Array(4);
+    const dirCount = new Int32Array(4);
+    let kinNeighbors = 0;
+    let threatNeighbors = 0;
+    let localSignal = 0;
+    const localSignalBase = (cy * gridW + cx) * laws.signalChannels;
+    for (let c = 0; c < laws.signalChannels; c++) {
+      localSignal += this.signals[localSignalBase + c];
+    }
+    localSignal = laws.signalChannels > 0 ? Math.min(1, localSignal / laws.signalChannels) : 0;
+
+    for (let dy0 = -perceptionRadius; dy0 <= perceptionRadius; dy0++) {
+      for (let dx0 = -perceptionRadius; dx0 <= perceptionRadius; dx0++) {
+        if (dx0 === 0 && dy0 === 0) continue;
+        const nx0 = ((cx + dx0) % gridW + gridW) % gridW;
+        const ny0 = ((cy + dy0) % gridH + gridH) % gridH;
+        const adx = dx0 < 0 ? -dx0 : dx0;
+        const ady = dy0 < 0 ? -dy0 : dy0;
+        const dir = adx >= ady ? (dx0 > 0 ? 1 : 3) : (dy0 > 0 ? 2 : 0);
+        dirCount[dir]++;
+        const nIdx = ny0 * gridW + nx0;
+        dirRes[dir] += this.resources[nIdx];
+
+        const neighbor = this.entityMap[nIdx];
+        if (neighbor >= 0 && this.entities.alive[neighbor]) {
+          dirEnt[dir]++;
+          if (this.genomeSimilarity(i, neighbor) >= kinThresh) kinNeighbors++;
+          else threatNeighbors++;
+        }
+
+        let signal = 0;
+        const sBase = nIdx * laws.signalChannels;
+        for (let c = 0; c < laws.signalChannels; c++) {
+          signal += this.signals[sBase + c];
+        }
+        dirSignal[dir] += laws.signalChannels > 0 ? signal / laws.signalChannels : 0;
+
+        const gBase = nIdx * GLYPH_CHANNELS;
+        let gMag = 0;
+        for (let c = 0; c < GLYPH_CHANNELS; c++) {
+          const g = this.glyphs[gBase + c];
+          gMag += g * g;
+        }
+        dirGlyph[dir] += Math.sqrt(gMag);
+      }
+    }
+
+    for (let d = 0; d < 4; d++) {
+      if (dirCount[d] > 0) {
+        dirRes[d] /= dirCount[d];
+        dirEnt[d] /= dirCount[d];
+        dirSignal[d] = Math.min(1, dirSignal[d] / dirCount[d]);
+        dirGlyph[d] = Math.min(1, dirGlyph[d] / dirCount[d]);
+      }
+    }
+
+    return { localSignal, dirRes, dirEnt, dirGlyph, dirSignal, kinNeighbors, threatNeighbors };
+  }
+
+  private buildNeuralSample(i: number): NeuralSample {
+    const { entities, resources, glyphs, gridW, laws } = this;
+    const genome = entities.getGenome(i);
+    const ex = entities.x[i];
+    const ey = entities.y[i];
+    const { localSignal, dirRes, dirEnt, dirGlyph, dirSignal, kinNeighbors, threatNeighbors } = this.senseEntityForNetwork(i);
+
+    const cellBase = (ey * gridW + ex) * GLYPH_CHANNELS;
+    let glyphMag = 0;
+    for (let c = 0; c < GLYPH_CHANNELS; c++) {
+      const g = glyphs[cellBase + c];
+      glyphMag += g * g;
+    }
+
+    const inputs = new Array<number>(NN_INPUTS).fill(0);
+    inputs[0] = resources[ey * gridW + ex];
+    inputs[1] = Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5));
+    inputs[2] = Math.min(1, Math.sqrt(glyphMag));
+    inputs[3] = localSignal;
+    inputs[4] = dirRes[0]; inputs[5] = dirRes[1]; inputs[6] = dirRes[2]; inputs[7] = dirRes[3];
+    inputs[8] = dirEnt[0]; inputs[9] = dirEnt[1]; inputs[10] = dirEnt[2]; inputs[11] = dirEnt[3];
+    inputs[12] = Math.min(1, dirSignal[0] * 0.9 + dirGlyph[0] * 0.7);
+    inputs[13] = Math.min(1, dirSignal[1] * 0.9 + dirGlyph[1] * 0.7);
+    inputs[14] = Math.min(1, dirSignal[2] * 0.9 + dirGlyph[2] * 0.7);
+    inputs[15] = Math.min(1, dirSignal[3] * 0.9 + dirGlyph[3] * 0.7);
+
+    const hidden = new Array<number>(NN_HIDDEN).fill(0);
+    for (let j = 0; j < NN_HIDDEN; j++) {
+      let sum = 0;
+      for (let k = 0; k < NN_INPUTS; k++) {
+        sum += genome[k * NN_HIDDEN + j] * inputs[k];
+      }
+      hidden[j] = Math.tanh(sum);
+    }
+
+    const persistence = Math.max(0, Math.min(0.92, laws.memoryPersistence));
+    const persistedUnits = Math.max(0, Math.min(NN_HIDDEN, laws.memorySize ?? NN_HIDDEN));
+    const mOff = i * MAX_MEMORY_SIZE;
+    if (persistedUnits > 0 && persistence > 0 && entities.age[i] > 1) {
+      for (let j = 0; j < persistedUnits; j++) {
+        hidden[j] = hidden[j] * (1 - persistence) + entities.memory[mOff + j] * persistence;
+      }
+    }
+
+    const logits = new Array<number>(NN_OUTPUTS).fill(0);
+    for (let a = 0; a < NN_OUTPUTS; a++) {
+      let sum = 0;
+      for (let j = 0; j < NN_HIDDEN; j++) {
+        sum += genome[NN_W1_SIZE + j * NN_OUTPUTS + a] * hidden[j];
+      }
+      logits[a] = sum;
+    }
+    let maxLogit = logits[0];
+    for (let a = 1; a < NN_OUTPUTS; a++) {
+      if (logits[a] > maxLogit) maxLogit = logits[a];
+    }
+    let expSum = 0;
+    const probs = new Array<number>(NN_OUTPUTS).fill(0);
+    for (let a = 0; a < NN_OUTPUTS; a++) {
+      probs[a] = Math.exp(logits[a] - maxLogit);
+      expSum += probs[a];
+    }
+    for (let a = 0; a < NN_OUTPUTS; a++) probs[a] /= expSum || 1;
+
+    const action = entities.action[i];
+    const ageScore = Math.min(1, entities.age[i] / 450);
+    const activeBonus = (
+      action === ActionType.ATTACK ||
+      action === ActionType.REPRODUCE ||
+      action === ActionType.SIGNAL ||
+      action === ActionType.DEPOSIT ||
+      action === ActionType.ABSORB
+    ) ? 0.08 : action !== ActionType.IDLE ? 0.04 : 0;
+    const socialScore = Math.min(1, (kinNeighbors + threatNeighbors) / 6) * 0.08;
+    const focusScore =
+      Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5)) * 0.46 +
+      Math.min(1, entities.size[i] / 1.8) * 0.24 +
+      ageScore * 0.14 +
+      Math.max(...probs) * 0.08 +
+      activeBonus +
+      socialScore;
+
+    return {
+      entityId: entities.id[i],
+      action,
+      age: entities.age[i],
+      energy: entities.energy[i],
+      size: entities.size[i],
+      kinNeighbors,
+      threatNeighbors,
+      focusScore,
+      inputs,
+      hidden,
+      probs,
+      genome: Array.from(genome),
+    };
+  }
+
+  private scoreNeuralFocusCandidate(i: number): number {
+    const { entities, laws } = this;
+    const action = entities.action[i];
+    const activeBonus = (
+      action === ActionType.ATTACK ||
+      action === ActionType.REPRODUCE ||
+      action === ActionType.SIGNAL ||
+      action === ActionType.DEPOSIT ||
+      action === ActionType.ABSORB
+    ) ? 0.10 : action !== ActionType.IDLE ? 0.05 : 0;
+    return (
+      Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5)) * 0.52 +
+      Math.min(1, entities.size[i] / 1.8) * 0.24 +
+      Math.min(1, entities.age[i] / 450) * 0.18 +
+      activeBonus
+    );
+  }
+
+  getNeuralSampleById(entityId: number): NeuralSample | null {
+    const { entities } = this;
+    for (let i = 0; i < entities.count; i++) {
+      if (entities.alive[i] && entities.id[i] === entityId) {
+        return this.buildNeuralSample(i);
+      }
+    }
+    return null;
+  }
+
+  getTopNeuralSample(): NeuralSample | null {
+    const { entities } = this;
+    let bestIdx = -1;
+    let bestScore = -1;
+    for (let i = 0; i < entities.count; i++) {
+      if (!entities.alive[i]) continue;
+      const score = this.scoreNeuralFocusCandidate(i);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    return bestIdx >= 0 ? this.buildNeuralSample(bestIdx) : null;
   }
 
   private killEntity(i: number): void {

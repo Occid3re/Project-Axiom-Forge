@@ -32,7 +32,7 @@ interface Snapshot {
 const STAGE_NAMES = [
   'Survival',
   'Resource Cycling',
-  'Glyph Communication',
+  'Communication',
   'Diversity',
   'Predation',
   'Cultural Marks',
@@ -196,7 +196,7 @@ export default function App() {
     return () => { socket.disconnect(); };
   }, [addLog]);
 
-  const sampleGenome = meta?.sampleGenome ?? null;
+  const sampleNetwork = meta?.sampleNetwork ?? null;
 
   const pop      = meta?.population ?? 0;
   const gen      = meta?.generation ?? 0;
@@ -299,7 +299,7 @@ export default function App() {
               </>
             ) : (
               /* Neural network X-ray view */
-              <NeuralNetView genome={sampleGenome} />
+              <NeuralNetView sample={sampleNetwork} />
             )}
 
             {/* Connection overlay — shown in both modes */}
@@ -339,7 +339,7 @@ export default function App() {
             <div className={`absolute left-1/2 -translate-x-1/2 text-[8px] text-gray-800 font-mono tracking-widest uppercase pointer-events-none whitespace-nowrap ${compactLandscape ? 'bottom-1' : 'bottom-2'}`}>
               {viewMode === 'simulation'
                 ? `gen ${gen + 1} · world ${wIdx}/${wTot} · tick ${tick}`
-                : `neural network · fittest entity · gen ${gen + 1}`}
+                : `neural network · locked specimen · gen ${gen + 1}`}
             </div>
           </div>
 
