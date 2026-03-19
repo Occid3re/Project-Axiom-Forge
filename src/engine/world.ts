@@ -4,10 +4,10 @@
  * All hot-path operations use typed arrays — no object allocation per tick.
  *
  * Decision making: each entity runs an Elman recurrent network each tick:
- *   inputs  = [localResource, energyNorm, glyphStrength, ageNorm,      (4 scalars)
- *              resN, resE, resS, resW,                                  (directional resource)
- *              entN, entE, entS, entW,                                  (directional entity)
- *              glyphN, glyphE, glyphS, glyphW]                         (directional glyph)
+ *   inputs  = [localResource, energyNorm, glyphStrength, signalStrength, (4 scalars)
+ *              resN, resE, resS, resW,                                   (directional resource)
+ *              entN, entE, entS, entW,                                   (directional entity)
+ *              commN, commE, commS, commW]                               (signal+glyph direction)
  *   h_new   = tanh(W1 · inputs)                                        (10 units)
  *   h_blend = (1-p) * h_new + p * h_prev (p = memoryPersistence; h_prev from entity memory)
  *   logits  = W2 · h_blend                                             (11 action logits)
@@ -103,6 +103,7 @@ export class World {
   private readonly dirRes    = new Float64Array(4);
   private readonly dirEnt    = new Float64Array(4);
   private readonly dirGlyph  = new Float64Array(4);
+  private readonly dirSignal = new Float64Array(4);
   private readonly dirCount  = new Int32Array(4);
   private readonly processOrder = new Int32Array(MAX_ENTITIES);
   private readonly colonyParent = new Int32Array(MAX_ENTITIES);
@@ -567,11 +568,19 @@ export class World {
       const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
     }
 
-    // Carrying-capacity "air" pressure — O(1), applied inline below.
-    const MAX_POP = 1024;
+    // Carrying capacity should matter on both eval and display worlds.
+    // Map the evolvable carryingCapacity law onto the actual entity hard cap
+    // instead of raw grid occupancy, otherwise it becomes almost dead on 256x256.
+    const entityHardCap = Math.min(1024, Math.floor(gridW * gridH * 0.07));
+    const carryMin = 0.05;
+    const carryMax = 0.24;
+    const carryNorm = Math.max(
+      0,
+      Math.min(1, ((laws.carryingCapacity ?? 0.10) - carryMin) / (carryMax - carryMin)),
+    );
     const sustainablePop = Math.max(
       16,
-      Math.min(MAX_POP, Math.floor(gridW * gridH * (laws.carryingCapacity ?? 0.10))),
+      Math.min(entityHardCap, Math.floor(16 + carryNorm * (entityHardCap - 16))),
     );
     const overCapacity = n > sustainablePop ? n / sustainablePop - 1 : 0;
     const airPressure = overCapacity > 0
@@ -609,10 +618,16 @@ export class World {
       const coopBonus   = laws.cooperationBonus ?? 0;
       const perceptionRadius = Math.max(1, Math.min(4, laws.maxPerceptionRadius ?? 2));
       const cx = entities.x[i], cy = entities.y[i];
-      const { dirRes, dirEnt, dirGlyph, dirCount } = this;
-      dirRes.fill(0); dirEnt.fill(0); dirGlyph.fill(0); dirCount.fill(0);
+      const { dirRes, dirEnt, dirGlyph, dirSignal, dirCount } = this;
+      dirRes.fill(0); dirEnt.fill(0); dirGlyph.fill(0); dirSignal.fill(0); dirCount.fill(0);
       let nCount = 0;
       let kinCount = 0;
+      let localSignal = 0;
+      const localSignalBase = (cy * gridW + cx) * laws.signalChannels;
+      for (let c = 0; c < laws.signalChannels; c++) {
+        localSignal += this.signals[localSignalBase + c];
+      }
+      localSignal = laws.signalChannels > 0 ? Math.min(1, localSignal / laws.signalChannels) : 0;
 
       for (let dy0 = -perceptionRadius; dy0 <= perceptionRadius; dy0++) {
         for (let dx0 = -perceptionRadius; dx0 <= perceptionRadius; dx0++) {
@@ -633,6 +648,12 @@ export class World {
               kinCount++;
             }
           }
+          let signal = 0;
+          const sBase = nIdx * laws.signalChannels;
+          for (let c = 0; c < laws.signalChannels; c++) {
+            signal += this.signals[sBase + c];
+          }
+          dirSignal[dir] += laws.signalChannels > 0 ? signal / laws.signalChannels : 0;
           // Glyph magnitude at neighbour cell
           const gBase = nIdx * GLYPH_CHANNELS;
           let gMag = 0;
@@ -647,6 +668,7 @@ export class World {
         if (dirCount[d] > 0) {
           dirRes[d]   /= dirCount[d];
           dirEnt[d]   /= dirCount[d];
+          dirSignal[d] = Math.min(1, dirSignal[d] / dirCount[d]);
           dirGlyph[d]  = Math.min(1, dirGlyph[d] / dirCount[d]);
         }
       }
@@ -682,7 +704,7 @@ export class World {
       if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
 
       // Decide action from directional perception
-      const action = this.decideAction(i, dirRes, dirEnt, dirGlyph);
+      const action = this.decideAction(i, localSignal, dirRes, dirEnt, dirGlyph, dirSignal);
       entities.action[i] = action;
 
       switch (action) {
@@ -703,14 +725,16 @@ export class World {
 
   /**
    * MLP decision: 16 sensory inputs → 10 hidden (tanh) → 11 action logits → softmax sample.
-   * Directional inputs: 4 dirs × {resource, entity density, glyph} from the perception scan.
+   * Directional inputs: 4 dirs × {resource, entity density, communication} from the perception scan.
    * Uses pre-allocated scratch buffers (nnInputs, nnHidden, nnLogits) — zero allocation.
    */
   private decideAction(
     i: number,
+    localSignal: number,
     dirRes: Float64Array,   // [N, E, S, W] normalised resource
     dirEnt: Float64Array,   // [N, E, S, W] normalised entity density
     dirGlyph: Float64Array, // [N, E, S, W] normalised glyph magnitude
+    dirSignal: Float64Array,// [N, E, S, W] normalised signal magnitude
   ): ActionType {
     const { entities, rng, resources, glyphs, gridW, laws } = this;
     const genome = entities.getGenome(i);
@@ -730,13 +754,16 @@ export class World {
     inp[0]  = resources[ey * gridW + ex];                                     // localResource
     inp[1]  = Math.min(1, entities.energy[i] / (laws.energyCap ?? 1.5));      // energyNorm
     inp[2]  = Math.min(1, Math.sqrt(glyphMag));                               // glyphStrength (own cell)
-    inp[3]  = Math.min(1, entities.age[i] / 500);                             // ageNorm
+    inp[3]  = localSignal;                                                    // signalStrength (own cell)
     // Directional resource (N, E, S, W)
     inp[4]  = dirRes[0]; inp[5]  = dirRes[1]; inp[6]  = dirRes[2]; inp[7]  = dirRes[3];
     // Directional entity density (N, E, S, W)
     inp[8]  = dirEnt[0]; inp[9]  = dirEnt[1]; inp[10] = dirEnt[2]; inp[11] = dirEnt[3];
-    // Directional glyph magnitude (N, E, S, W)
-    inp[12] = dirGlyph[0]; inp[13] = dirGlyph[1]; inp[14] = dirGlyph[2]; inp[15] = dirGlyph[3];
+    // Directional communication (fast signal + persistent glyph), N/E/S/W
+    inp[12] = Math.min(1, dirSignal[0] * 0.9 + dirGlyph[0] * 0.7);
+    inp[13] = Math.min(1, dirSignal[1] * 0.9 + dirGlyph[1] * 0.7);
+    inp[14] = Math.min(1, dirSignal[2] * 0.9 + dirGlyph[2] * 0.7);
+    inp[15] = Math.min(1, dirSignal[3] * 0.9 + dirGlyph[3] * 0.7);
 
     // W1 forward pass: hidden[h] = tanh(Σ_k genome[k * NN_HIDDEN + h] * input[k])
     const h = this.nnHidden;
@@ -838,7 +865,8 @@ export class World {
     const { entities, laws, rng, gridW, gridH, entityMap } = this;
 
     if (this.getLocalColonySupport(i) < laws.reproductionCost) return;
-    if (entities.count >= Math.min(1024, Math.floor(gridW * gridH * 0.07))) return;
+    const entityHardCap = Math.min(1024, Math.floor(gridW * gridH * 0.07));
+    if (entities.count >= entityHardCap) return;
 
     const ox = entities.x[i];
     const oy = entities.y[i];

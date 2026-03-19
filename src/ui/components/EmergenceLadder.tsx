@@ -24,9 +24,9 @@ const STAGES = [
     glowColor: 'rgba(6, 182, 212, 0.4)',
   },
   {
-    name: 'Glyph Communication',
-    subtitle: 'Environmental memory',
-    description: 'Glyph deposits and absorbs predict future births (lagged correlation). The environment starts carrying reusable behavioral traces.',
+    name: 'Communication',
+    subtitle: 'Signals and trails',
+    description: 'Fast chemical signals and slower glyph traces start predicting future births. The world begins carrying reusable shared information.',
     icon: '◇',
     color: '#8b5cf6',
     glowColor: 'rgba(139, 92, 246, 0.4)',
@@ -74,7 +74,7 @@ const STAGES = [
   {
     name: 'Ecology',
     subtitle: 'Complex ecosystem',
-    description: 'Multiple species coexist with predation, glyph communication, cultural marks, kin selection, and resource cycling all active simultaneously.',
+    description: 'Multiple species coexist with predation, communication, cultural marks, kin selection, and resource cycling all active simultaneously.',
     icon: '◎',
     color: '#14b8a6',
     glowColor: 'rgba(20, 184, 166, 0.4)',

@@ -22,17 +22,17 @@ const CPU_PENALTY_W         = 0.05; // minimal penalty — complex worlds should
 
 const DEFAULT_SCORE_WEIGHTS = {
   persistence:           0.5,
-  diversity:             1.5,
+  diversity:             1.4,
   complexityGrowth:      1.0,
-  communication:         2.0,
-  envStructure:          0.5,
+  communication:         2.8,
+  envStructure:          0.6,
   adaptability:          1.0,
-  speciation:            3.0,
-  interactions:          3.0,
-  spatialStructure:      1.5,
-  populationDynamics:    1.5,
-  stigmergicUse:         2.5,
-  socialDifferentiation: 4.0,
+  speciation:            2.6,
+  interactions:          2.4,
+  spatialStructure:      2.0,
+  populationDynamics:    2.3,
+  stigmergicUse:         3.0,
+  socialDifferentiation: 4.5,
 };
 
 interface JobMessage {

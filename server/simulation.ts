@@ -26,13 +26,15 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 12;
+const STATE_VERSION = 13;
 
 interface SavedState {
   version: number;
   generation: number;
   bestScore: number;
   bestLaws: WorldLaws | null;
+  showcaseScore: number;
+  showcaseLaws: WorldLaws | null;
   lastImprovementGen: number;
   generationSummaries: Array<{ gen: number; best: number; avg: number }>;
   population: WorldLaws[];
@@ -49,17 +51,17 @@ const EVAL_CONFIG = {
   mutationStrength:  0.08,
   scoreWeights: {
     persistence:      0.5,   // survival is necessary but shouldn't dominate
-    diversity:        1.5,   // genome divergence is key to interesting worlds
+    diversity:        1.4,   // genome divergence is key to interesting worlds
     complexityGrowth: 1.0,
-    communication:    2.0,   // lagged correlation is already hard to fake
-    envStructure:     0.5,   // variance of resource coverage over time
+    communication:    2.8,   // reward actual coordination, not just churn
+    envStructure:     0.6,   // variance of resource coverage over time
     adaptability:     1.0,
-    speciation:       3.0,   // we WANT visible species clusters
-    interactions:     3.0,   // still valuable, but don't let pure aggression dominate
-    spatialStructure: 1.5,   // reward territories / clustering
-    populationDynamics: 1.5, // reward oscillation, penalize flat lines
-    stigmergicUse:    2.5,   // reward balanced deposit/absorb
-    socialDifferentiation: 4.0, // strongly reward selective kin behaviour and colonies
+    speciation:       2.6,   // visible species clusters matter, but not pure mutation haze
+    interactions:     2.4,   // valuable, but don't let pure aggression dominate
+    spatialStructure: 2.0,   // reward territories / clustering
+    populationDynamics: 2.3, // reward oscillation, penalize flat lines
+    stigmergicUse:    3.0,   // reward balanced deposit/absorb
+    socialDifferentiation: 4.5, // strongly reward selective kin behaviour and colonies
   },
   // Escalating stagnation tiers
   stagnationMild:           30,   // 25% random, 2× mutation
@@ -80,6 +82,43 @@ const DISPLAY_CONFIG = {
   fieldKeyframeInterval: 60, // full field refresh every ~2s for resync
   fieldTileSize: 8,
 };
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function bandScore(value: number, center: number, radius: number): number {
+  return Math.max(0, 1 - Math.abs(value - center) / radius);
+}
+
+function scoreShowcaseWorld(scores: WorldScores, laws: WorldLaws): number {
+  const spectacle =
+    scores.populationDynamics * 0.24 +
+    scores.spatialStructure * 0.22 +
+    scores.communication * 0.16 +
+    scores.stigmergicUse * 0.16 +
+    scores.socialDifferentiation * 0.14 +
+    scores.speciation * 0.08;
+
+  const memoryScore =
+    clamp01((laws.memorySize - 2) / 6) * 0.45 +
+    bandScore(laws.memoryPersistence, 0.42, 0.30) * 0.55;
+  const capacityScore = bandScore(laws.carryingCapacity, 0.12, 0.08);
+  const signalScore =
+    clamp01((laws.signalChannels - 1) / 3) * 0.4 +
+    bandScore(laws.signalDecay, 0.62, 0.24) * 0.6;
+
+  const mutationPenalty = clamp01((laws.mutationRate * laws.mutationStrength - 0.022) / 0.028);
+  const aggressionPenalty = clamp01((laws.attackTransfer - 0.56) / 0.12);
+  const chaosPenalty =
+    clamp01((laws.disasterProbability - 0.008) / 0.007) * 0.35 +
+    clamp01((laws.driftSpeed - 0.10) / 0.06) * 0.15;
+
+  const structureBonus = 0.78 + memoryScore * 0.12 + capacityScore * 0.06 + signalScore * 0.04;
+  const penaltyMul = Math.max(0.45, 1 - mutationPenalty * 0.32 - aggressionPenalty * 0.10 - chaosPenalty);
+
+  return spectacle * structureBonus * penaltyMul;
+}
 
 // ── Worker pool ──────────────────────────────────────────────────────────────
 
@@ -599,6 +638,8 @@ export class SimulationController {
   // Shared
   bestScore = 0;
   bestLaws: WorldLaws | null = null;
+  showcaseScore = 0;
+  showcaseLaws: WorldLaws | null = null;
   private pendingLog: string | null = null;
 
   // Stagnation tracking
@@ -634,6 +675,8 @@ export class SimulationController {
       this.generation           = s.generation;
       this.bestScore            = s.bestScore;
       this.bestLaws             = s.bestLaws;
+      this.showcaseScore        = s.showcaseScore ?? 0;
+      this.showcaseLaws         = s.showcaseLaws ?? null;
       this.lastImprovementGen   = s.lastImprovementGen;
       this.generationSummaries  = s.generationSummaries ?? [];
       this.population           = s.population ?? [];
@@ -650,6 +693,8 @@ export class SimulationController {
         generation:          this.generation,
         bestScore:           this.bestScore,
         bestLaws:            this.bestLaws,
+        showcaseScore:       this.showcaseScore,
+        showcaseLaws:        this.showcaseLaws,
         lastImprovementGen:  this.lastImprovementGen,
         generationSummaries: this.generationSummaries,
         population:          this.population,
@@ -671,7 +716,7 @@ export class SimulationController {
     if (this.population.length === 0) this.seedPopulation();
     // Start display with best known laws immediately
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
+      this.startDisplayWorld(this.showcaseLaws ?? this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
     }
 
     while (true) {
@@ -725,6 +770,20 @@ export class SimulationController {
           this.saveState();
           if (improvement >= EVAL_CONFIG.minImprovementRatio &&
               this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) {
+            this.startDisplayWorld(this.showcaseLaws ?? laws);
+          }
+        }
+
+        const showcase = scoreShowcaseWorld(result.scores, laws);
+        if (showcase > this.showcaseScore) {
+          const improvement = this.showcaseScore > 0
+            ? (showcase - this.showcaseScore) / this.showcaseScore
+            : 1;
+          this.showcaseScore = showcase;
+          this.showcaseLaws = laws;
+          this.log(`New showcase: ${showcase.toFixed(3)} · Gen ${this.generation} · World ${i + 1}`);
+          this.saveState();
+          if (improvement >= 0.015 && this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) {
             this.startDisplayWorld(laws);
           }
         }
@@ -880,7 +939,7 @@ export class SimulationController {
 
   getBootstrapFrames(): { entities: ArrayBuffer; fields: ArrayBuffer } | null {
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
+      this.startDisplayWorld(this.showcaseLaws ?? this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
     }
     const world = this.displayWorld!;
     const baseline = this.lastFieldState ?? samplePackedFieldState(world, this.displayTick);
@@ -893,7 +952,7 @@ export class SimulationController {
   /** Step display world once. Call at ~30fps. Returns broadcast data. */
   displayStep(): { entities: ArrayBuffer; fields?: ArrayBuffer; meta: MetaBroadcast } | null {
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
+      this.startDisplayWorld(this.showcaseLaws ?? this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
     }
 
     const world = this.displayWorld!;
@@ -913,7 +972,7 @@ export class SimulationController {
     this.displaySnapshots.push(snap);
     if (this.displaySnapshots.length > 400) this.displaySnapshots.shift();
 
-    if (this.displayTick % 60 === 0 && this.displaySnapshots.length > 20 && this.bestLaws) {
+    if (this.displayTick % 60 === 0 && this.displaySnapshots.length > 20) {
       this.displayScores = scoreWorld(
         {
           snapshots:             this.displaySnapshots,
@@ -928,13 +987,17 @@ export class SimulationController {
     }
 
     if (this.displayTick > 300 && snap.population === 0) {
-      this.log('Display world — extinction. Reseeding with best laws...');
-      if (this.bestLaws) this.startDisplayWorld(this.bestLaws);
+      this.log('Display world — extinction. Reseeding with showcase laws...');
+      const nextLaws = this.showcaseLaws ?? this.bestLaws;
+      if (nextLaws) this.startDisplayWorld(nextLaws);
     }
 
-    if (this.displayTick > 0 && this.displayTick % 9000 === 0 && this.bestLaws) {
-      this.log('Display world — periodic refresh with current best laws');
-      this.startDisplayWorld(this.bestLaws);
+    if (this.displayTick > 0 && this.displayTick % 9000 === 0) {
+      const nextLaws = this.showcaseLaws ?? this.bestLaws;
+      if (nextLaws) {
+        this.log('Display world — periodic refresh with showcase laws');
+        this.startDisplayWorld(nextLaws);
+      }
     }
 
     // Grab genome of the most-energetic entity for neural-net visualisation

@@ -50,7 +50,7 @@ export function scoreWorld(
   const communication = scoreCommunication(snaps);
   const envStructure = scoreEnvStructure(snaps);
   const adaptability = scoreAdaptability(history);
-  const speciation = scoreSpeciation(snaps);
+  const speciation = scoreSpeciation(snaps, chaosFactor);
   const interactions = scoreInteractions(snaps);
   const spatialStructure = scoreSpatialStructure(snaps);
   const populationDynamics = scorePopulationDynamics(snaps);
@@ -127,27 +127,34 @@ function scoreComplexityGrowth(snaps: WorldSnapshot[], chaosFactor: number): num
 }
 
 function scoreCommunication(snaps: WorldSnapshot[]): number {
-  // Communication via stigmergic glyphs (DEPOSIT+ABSORB): entities lay chemical trails
-  // that others can follow. If glyph activity correlates with future births, communication
-  // is driving reproduction — a real information channel.
+  // Communication now includes both fast chemical signaling and persistent glyph memory.
+  // We reward worlds where communication activity predicts future births instead of
+  // only adding visual noise.
   if (snaps.length < 30) return 0;
 
-  const glyphArr = snaps.map(s => s.deposits + s.absorbs);
+  const commArr = snaps.map(s => s.signals * 0.9 + s.deposits + s.absorbs);
   const birthArr = snaps.map(s => s.births);
 
-  const maxGlyph = Math.max(...glyphArr) || 1;
-  const meanGlyph = mean(glyphArr) / maxGlyph;
+  const popSnaps = snaps.filter(s => s.population > 4);
+  if (popSnaps.length < 12) return 0;
+
+  const maxComm = Math.max(...commArr) || 1;
+  const meanComm = mean(commArr) / maxComm;
+  const signalRate = mean(popSnaps.map(s => s.signals / s.population));
+  const glyphRate = mean(popSnaps.map(s => (s.deposits + s.absorbs) / s.population));
 
   let bestCorr = 0;
   for (let lag = 5; lag <= 15; lag++) {
-    if (glyphArr.length <= lag + 3) continue;
-    const gSlice = glyphArr.slice(0, glyphArr.length - lag);
+    if (commArr.length <= lag + 3) continue;
+    const gSlice = commArr.slice(0, commArr.length - lag);
     const bSlice = birthArr.slice(lag);
     const c = Math.abs(correlation(gSlice, bSlice));
     if (c > bestCorr) bestCorr = c;
   }
 
-  return Math.min(1, meanGlyph * 0.3 + bestCorr * 0.7);
+  const signalScore = Math.min(1, signalRate * 5);
+  const glyphScore = Math.min(1, glyphRate * 3.5);
+  return Math.min(1, meanComm * 0.2 + bestCorr * 0.5 + signalScore * 0.15 + glyphScore * 0.15);
 }
 
 function scoreEnvStructure(snaps: WorldSnapshot[]): number {
@@ -192,7 +199,7 @@ function scoreAdaptability(history: WorldHistory): number {
   return history.postDisasterRecoveries / Math.max(1, history.disasterCount);
 }
 
-function scoreSpeciation(snaps: WorldSnapshot[]): number {
+function scoreSpeciation(snaps: WorldSnapshot[], chaosFactor: number): number {
   let sum = 0;
   let count = 0;
   for (const s of snaps) {
@@ -203,27 +210,28 @@ function scoreSpeciation(snaps: WorldSnapshot[]): number {
   }
   if (count === 0) return 0;
   const meanVar = sum / count;
-  return Math.min(1, meanVar / 0.5);
+  return Math.min(1, meanVar / 0.5) * chaosFactor;
 }
 
 function scoreInteractions(snaps: WorldSnapshot[]): number {
-  // Interactions = predation (attacks) coexisting with glyph-based communication.
-  // Glyph activity replaces signal-based communication as the "social" component —
-  // entities can perceive glyphs directionally but cannot perceive chemical signals.
+  // Interactions = predation coexisting with both fast and persistent communication.
   if (snaps.length < 20) return 0;
 
   const popSnaps = snaps.filter(s => s.population > 2);
   if (popSnaps.length < 10) return 0;
 
   const attackRate = mean(popSnaps.map(s => s.attacks / s.population));
+  const signalRate = mean(popSnaps.map(s => s.signals / s.population));
   const glyphRate  = mean(popSnaps.map(s => (s.deposits + s.absorbs) / s.population));
 
   const attackScore = attackRate > 0.01
     ? Math.min(1, attackRate * 5) * Math.min(1, 0.5 / (attackRate + 0.01))
     : 0;
+  const signalScore = Math.min(1, signalRate * 4);
   const glyphScore = Math.min(1, glyphRate * 3);
+  const communicationScore = Math.sqrt(Math.max(0, signalScore) * Math.max(0, glyphScore));
 
-  return Math.sqrt(attackScore * glyphScore);
+  return Math.sqrt(attackScore * communicationScore);
 }
 
 function scoreSpatialStructure(snaps: WorldSnapshot[]): number {
@@ -275,8 +283,9 @@ function scorePopulationDynamics(snaps: WorldSnapshot[]): number {
   const cv = Math.sqrt(sampleVariance(pops)) / (meanPop + 1);
   const oscillationScore = Math.min(1, significantChanges / 15);
   const cvScore = Math.min(1, cv * 5);
+  const presenceScore = Math.min(1, meanPop / 18);
 
-  return oscillationScore * 0.6 + cvScore * 0.4;
+  return (oscillationScore * 0.6 + cvScore * 0.4) * presenceScore;
 }
 
 /**

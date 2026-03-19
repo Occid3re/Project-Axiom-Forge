@@ -9,10 +9,10 @@
 //   W2 [NN_HIDDEN × NN_OUTPUTS = 110]: genome[NN_W1_SIZE + hidden * NN_OUTPUTS + action]
 //
 // Forward pass (per entity, per tick):
-//   inputs  = [localResource, energyNorm, glyphStrength, ageNorm,         (4 scalars)
+//   inputs  = [localResource, energyNorm, glyphStrength, signalStrength,  (4 scalars)
 //              resN, resE, resS, resW,                                     (directional resource)
 //              entN, entE, entS, entW,                                     (directional entity presence)
-//              glyphN, glyphE, glyphS, glyphW]                            (directional glyph)
+//              commN, commE, commS, commW]                                (directional signal+glyph)
 //                                                                          (16 values total, all 0–1)
 //   h_new   = tanh(W1 · inputs)                                           (10 units)
 //   h_blend = (1 - memoryPersistence) * h_new + memoryPersistence * h_prev
