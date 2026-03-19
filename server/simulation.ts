@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 10;
+const STATE_VERSION = 11;
 
 interface SavedState {
   version: number;
@@ -55,11 +55,11 @@ const EVAL_CONFIG = {
     envStructure:     0.5,   // variance of resource coverage over time
     adaptability:     1.0,
     speciation:       3.0,   // we WANT visible species clusters
-    interactions:     3.5,   // predator-prey makes watching fun
+    interactions:     3.0,   // still valuable, but don't let pure aggression dominate
     spatialStructure: 1.5,   // reward territories / clustering
     populationDynamics: 1.5, // reward oscillation, penalize flat lines
     stigmergicUse:    2.5,   // reward balanced deposit/absorb
-    socialDifferentiation: 3.0, // reward kin-selective behaviour
+    socialDifferentiation: 4.0, // strongly reward selective kin behaviour and colonies
   },
   // Escalating stagnation tiers
   stagnationMild:           30,   // 25% random, 2× mutation

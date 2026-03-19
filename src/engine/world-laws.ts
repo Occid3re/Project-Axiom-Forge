@@ -99,8 +99,8 @@ const FLOAT_RANGES: Record<string, FloatRange> = {
   idleCost: { min: 0.001, max: 0.05 },
   attackTransfer: { min: 0.0, max: 0.8 },
   signalDecay: { min: 0.1, max: 0.99 },
-  memoryPersistence: { min: 0.0, max: 1.0 },
-  disasterProbability: { min: 0.0, max: 0.05 },
+  memoryPersistence: { min: 0.0, max: 0.92 },
+  disasterProbability: { min: 0.0, max: 0.02 },
   terrainVariability: { min: 0.0, max: 1.0 },
   carryingCapacity: { min: 0.02, max: 0.30 },
   poisonStrength: { min: 0.0, max: 0.3 },
@@ -110,12 +110,12 @@ const FLOAT_RANGES: Record<string, FloatRange> = {
   signalCost: { min: 0.0, max: 0.05 },
   corpseEnergy: { min: 0.1, max: 1.0 },
   agingRate: { min: 0.0, max: 0.01 },
-  driftSpeed: { min: 0.0, max: 0.4 },
+  driftSpeed: { min: 0.0, max: 0.22 },
   glyphDecay: { min: 0.990, max: 0.999 },
   depositCost: { min: 0.0, max: 0.03 },
   absorbCost: { min: 0.0, max: 0.02 },
   absorbRate: { min: 0.0, max: 0.3 },
-  kinThreshold: { min: 0.6, max: 0.95 },
+  kinThreshold: { min: 0.72, max: 0.95 },
 };
 
 const INT_RANGES: Record<string, { min: number; max: number }> = {

@@ -302,12 +302,14 @@ function scoreStigmergicUse(snaps: WorldSnapshot[]): number {
 }
 
 /**
- * Reward worlds where entities behave differently toward kin vs non-kin.
+ * Reward worlds where entities behave differently toward kin vs non-kin and
+ * actually stabilize into fused multicellular colonies.
  * Uses direct social counters from the world:
  * - kinContacts: nearby kin observed during perception scans
  * - threatContacts: nearby non-kin observed during perception scans
  * - kinCooperation: kin neighbors that actually contributed cooperation energy
  * - attacks: successful attacks, which are non-kin-only by world rules
+ * - fusedMembers / largestColony / colonyBirths: actual colony formation signals
  */
 function scoreSocialDifferentiation(snaps: WorldSnapshot[]): number {
   if (snaps.length < 40) return 0;
@@ -333,8 +335,18 @@ function scoreSocialDifferentiation(snaps: WorldSnapshot[]): number {
   const cooperationScore = Math.min(1, coopRate * 1.5);
   const aggressionScore = Math.min(1, threatAttackRate * 8);
 
+  const colonyFraction = mean(popSnaps.map(s => s.fusedMembers / Math.max(1, s.population)));
+  const colonySizeScore = mean(popSnaps.map(s => Math.min(1, Math.max(0, s.largestColony - 1) / 4)));
+  const colonyBirthScore = mean(popSnaps.map(s => s.births > 0 ? s.colonyBirths / s.births : 0));
+
   // Selective societies do both: support kin and punish outsiders under the same physics.
-  return Math.sqrt(cooperationScore * aggressionScore) * exposureBalance;
+  const socialCore = Math.sqrt(cooperationScore * aggressionScore) * exposureBalance;
+  const colonyCore =
+    Math.min(1, colonyFraction * 1.4) * 0.45 +
+    colonySizeScore * 0.35 +
+    Math.min(1, colonyBirthScore * 2.5) * 0.20;
+
+  return Math.min(1, socialCore * 0.65 + colonyCore * 0.35);
 }
 
 // --- Utilities ---

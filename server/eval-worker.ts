@@ -28,11 +28,11 @@ const DEFAULT_SCORE_WEIGHTS = {
   envStructure:          0.5,
   adaptability:          1.0,
   speciation:            3.0,
-  interactions:          3.5,
+  interactions:          3.0,
   spatialStructure:      1.5,
   populationDynamics:    1.5,
   stigmergicUse:         2.5,
-  socialDifferentiation: 3.0,
+  socialDifferentiation: 4.0,
 };
 
 interface JobMessage {

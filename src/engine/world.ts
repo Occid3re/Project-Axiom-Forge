@@ -41,6 +41,9 @@ export interface WorldSnapshot {
   kinContacts: number;
   threatContacts: number;
   kinCooperation: number;
+  fusedMembers: number;
+  largestColony: number;
+  colonyBirths: number;
   poisonCoverage: number;   // fraction of cells with poison > 0.1
 }
 
@@ -88,6 +91,9 @@ export class World {
   private tickKinContacts = 0;
   private tickThreatContacts = 0;
   private tickKinCooperation = 0;
+  private tickFusedMembers = 0;
+  private tickLargestColony = 0;
+  private tickColonyBirths = 0;
 
   // Pre-allocated MLP scratch buffers — avoids GC pressure in the hot loop
   private readonly nnInputs  = new Float64Array(NN_INPUTS);
@@ -184,6 +190,9 @@ export class World {
     this.tickKinContacts = 0;
     this.tickThreatContacts = 0;
     this.tickKinCooperation = 0;
+    this.tickFusedMembers = 0;
+    this.tickLargestColony = 0;
+    this.tickColonyBirths = 0;
 
     this.decaySignals();
     this.decayPoison();
@@ -408,6 +417,15 @@ export class World {
       }
     }
 
+    this.tickFusedMembers = 0;
+    this.tickLargestColony = 0;
+    for (let i = 0; i < n; i++) {
+      const members = this.colonyMembers[i];
+      if (members <= 1) continue;
+      this.tickFusedMembers += members;
+      if (members > this.tickLargestColony) this.tickLargestColony = members;
+    }
+
     // Fused colonies equalize energy and partially synchronize recurrent memory.
     for (let i = 0; i < n; i++) {
       if (!entities.alive[i]) continue;
@@ -484,6 +502,7 @@ export class World {
   private fundReproductionFromColony(i: number, cost: number): boolean {
     const { entities, entityMap, gridW, gridH } = this;
     let remaining = cost;
+    let usedDonor = false;
 
     const parentSpend = Math.min(Math.max(0, entities.energy[i] - 0.12), remaining);
     entities.energy[i] -= parentSpend;
@@ -507,11 +526,13 @@ export class World {
         if (this.colonyRoot[donor] !== root) continue;
         const donorSpend = Math.min(Math.max(0, entities.energy[donor] - 0.12) * 0.5, remaining);
         entities.energy[donor] -= donorSpend;
+        if (donorSpend > 0) usedDonor = true;
         remaining -= donorSpend;
         if (remaining <= 1e-6) break;
       }
     }
 
+    if (remaining <= 1e-6 && usedDonor) this.tickColonyBirths++;
     return remaining <= 1e-6;
   }
 
@@ -581,19 +602,20 @@ export class World {
         if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
       }
 
-      // Directional perception scan (radius-2): accumulate resource, entity, glyph per quadrant.
+      // Directional perception scan: accumulate resource, entity, glyph per quadrant.
       // Quadrant assignment uses dominant axis: |dx|>=|dy| → E/W, else → S/N.
       // Also used for overcrowding / cooperation since it covers the same neighbourhood.
       const crowdThresh = Math.max(3, laws.crowdingThreshold ?? 3); // min 3 — 1 killed social behavior
       const coopBonus   = laws.cooperationBonus ?? 0;
+      const perceptionRadius = Math.max(1, Math.min(4, laws.maxPerceptionRadius ?? 2));
       const cx = entities.x[i], cy = entities.y[i];
       const { dirRes, dirEnt, dirGlyph, dirCount } = this;
       dirRes.fill(0); dirEnt.fill(0); dirGlyph.fill(0); dirCount.fill(0);
       let nCount = 0;
       let kinCount = 0;
 
-      for (let dy0 = -2; dy0 <= 2; dy0++) {
-        for (let dx0 = -2; dx0 <= 2; dx0++) {
+      for (let dy0 = -perceptionRadius; dy0 <= perceptionRadius; dy0++) {
+        for (let dx0 = -perceptionRadius; dx0 <= perceptionRadius; dx0++) {
           if (dx0 === 0 && dy0 === 0) continue;
           const nx0 = ((cx + dx0) % gridW + gridW) % gridW;
           const ny0 = ((cy + dy0) % gridH + gridH) % gridH;
@@ -726,22 +748,22 @@ export class World {
       h[j] = Math.tanh(sum);
     }
 
-    // Recurrent memory: blend new hidden state with previous (Elman network).
-    const persistence = laws.memoryPersistence;
-    if (persistence > 0 && entities.age[i] > 1) {
-      const mOff = i * MAX_MEMORY_SIZE;
-      for (let j = 0; j < NN_HIDDEN; j++) {
+    // Recurrent memory: blend some hidden units with previous state, but always
+    // mirror the current hidden state back into memory so stigmergic deposit/absorb
+    // can operate on meaningful live state even in reactive worlds.
+    const persistence = Math.max(0, Math.min(0.92, laws.memoryPersistence));
+    const persistedUnits = Math.max(0, Math.min(NN_HIDDEN, laws.memorySize ?? NN_HIDDEN));
+    const mOff = i * MAX_MEMORY_SIZE;
+    if (persistedUnits > 0 && persistence > 0 && entities.age[i] > 1) {
+      for (let j = 0; j < persistedUnits; j++) {
         h[j] = h[j] * (1 - persistence) + entities.memory[mOff + j] * persistence;
       }
-      for (let j = 0; j < NN_HIDDEN; j++) {
-        entities.memory[mOff + j] = h[j];
-      }
-    } else if (persistence > 0) {
-      // First tick: seed memory with pure reactive hidden state (no blend)
-      const mOff = i * MAX_MEMORY_SIZE;
-      for (let j = 0; j < NN_HIDDEN; j++) {
-        entities.memory[mOff + j] = h[j];
-      }
+    }
+    for (let j = 0; j < persistedUnits; j++) {
+      entities.memory[mOff + j] = h[j];
+    }
+    for (let j = persistedUnits; j < NN_HIDDEN; j++) {
+      entities.memory[mOff + j] = 0;
     }
 
     // W2 forward pass: logits[a] = Σ_h genome[NN_W1_SIZE + h * NN_OUTPUTS + a] * hidden[h]
@@ -1099,6 +1121,9 @@ export class World {
       kinContacts: this.tickKinContacts,
       threatContacts: this.tickThreatContacts,
       kinCooperation: this.tickKinCooperation,
+      fusedMembers: this.tickFusedMembers,
+      largestColony: this.tickLargestColony,
+      colonyBirths: this.tickColonyBirths,
       poisonCoverage: poisonedCells / this.poison.length,
     };
   }
