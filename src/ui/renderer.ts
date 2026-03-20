@@ -23,6 +23,7 @@ function clamp01(v: number) {
   return Math.max(0, Math.min(1, v));
 }
 
+// Mutable — admin panel writes overrides to localStorage; reload to apply.
 const COLOR_GRADING = {
   hueVariation: 0.24,
   saturationAmount: 1.04,
@@ -33,21 +34,21 @@ const COLOR_GRADING = {
   maxBrightness: 0.87,
   backgroundBrightness: 0.96,
   contrast: 1.04,
-} as const;
+};
 
 const SCENE_TUNING = {
   sceneSaturation: 0.95,
   bloomStrength: 0.34,
-} as const;
+};
 
 const ORGANISM_COLOR_TUNING = {
   highlightTintRetention: 0.84,
   midtoneColorStrength: 0.60,
   localHueCoherence: 0.18,
   edgeSeparation: 0.15,
-} as const;
+};
 
-const BIO_PALETTE = {
+const BIO_PALETTE: Record<string, [number, number, number]> = {
   backgroundBase: [0.018, 0.024, 0.028],
   backgroundNoise: [0.010, 0.012, 0.008],
   resourceLow: [0.045, 0.090, 0.040],
@@ -72,13 +73,22 @@ const BIO_PALETTE = {
   organism5: [0.400, 0.310, 0.380],
   organismWarm: [0.520, 0.420, 0.280],
   cellShadow: [0.080, 0.100, 0.120],
-} as const;
+};
+
+// Apply admin color overrides from localStorage (populated by /admin panel → page reload applies)
+try {
+  const _ov = JSON.parse(localStorage.getItem('axiom_colors') ?? '{}');
+  if (_ov.colorGrading)        Object.assign(COLOR_GRADING, _ov.colorGrading);
+  if (_ov.sceneTuning)         Object.assign(SCENE_TUNING, _ov.sceneTuning);
+  if (_ov.organismColorTuning) Object.assign(ORGANISM_COLOR_TUNING, _ov.organismColorTuning);
+  if (_ov.bioPalette)          Object.assign(BIO_PALETTE, _ov.bioPalette);
+} catch { /* localStorage unavailable (SSR/worker) */ }
 
 function glNum(value: number) {
   return value.toFixed(3);
 }
 
-function glVec3(value: readonly [number, number, number]) {
+function glVec3(value: readonly [number, number, number] | [number, number, number] | number[]) {
   return `vec3(${value.map(glNum).join(', ')})`;
 }
 
@@ -157,9 +167,10 @@ const SCENE_FRAG = `
     vec4 sig   = texture2D(u_sig,   wuv);
     vec4 trail = texture2D(u_trail, wuv);
 
-    float r = res.r;       // resource concentration
-    float poison = res.g;  // toxin concentration
-    float glyph = res.b;   // stigmergic memory magnitude
+    float r = res.r;          // resource concentration
+    float poison = res.g;     // toxin concentration
+    float glyph = res.b;      // stigmergic memory magnitude
+    float macroBody = res.a;  // shared macro-organism envelope
 
     vec3 darkBg = ${glVec3(BIO_PALETTE.backgroundBase)};
     float substrate = hash(wuv * 180.0) * 0.006;
@@ -177,6 +188,10 @@ const SCENE_FRAG = `
     float glyphPulse = 0.90 + 0.10 * sin(u_time * 0.8 + wuv.x * 7.0 + wuv.y * 5.0);
     darkBg += ${glVec3(BIO_PALETTE.glyphPrimary)} * glyph * glyph * glyphPulse * 0.34;
     darkBg += ${glVec3(BIO_PALETTE.glyphSecondary)} * glyph * 0.18;
+    float macroEdge = macroBody * (1.0 - macroBody) * 4.0;
+    darkBg += vec3(0.020, 0.028, 0.030) * macroBody * 0.18;
+    darkBg += vec3(0.040, 0.058, 0.064) * macroEdge * 0.20;
+    darkBg -= vec3(0.010, 0.008, 0.006) * macroBody * 0.10;
 
     float sigR = sig.r * sig.r;
     float sigG = sig.g * sig.g;
@@ -408,6 +423,7 @@ export class WorldRenderer {
 
   private hasData = false;
   private latestFieldFrame: DecodedFieldFrame | null = null;
+  private worldLaws: { morphAspect: number; morphCurvature: number; morphWave: number; morphLobes: number; morphTaper: number } | null = null;
   private latestEntityFrame: DecodedEntityFrame | null = null;
   private lastRenderMs = 0;
   private smoothDelta = 16; // exponential moving average of frame delta ms
@@ -514,6 +530,17 @@ export class WorldRenderer {
     this.flushCombinedFrame();
   }
 
+  setLaws(laws: { morphAspect?: number; morphCurvature?: number; morphWave?: number; morphLobes?: number; morphTaper?: number } | null) {
+    if (!laws) { this.worldLaws = null; return; }
+    this.worldLaws = {
+      morphAspect:    laws.morphAspect    ?? 1.2,
+      morphCurvature: laws.morphCurvature ?? 0.08,
+      morphWave:      laws.morphWave      ?? 0.05,
+      morphLobes:     laws.morphLobes     ?? 0.03,
+      morphTaper:     laws.morphTaper     ?? 0.12,
+    };
+  }
+
   private flushCombinedFrame() {
     if (!this.latestFieldFrame || !this.latestEntityFrame) return;
     this.updateFrame({
@@ -561,15 +588,16 @@ export class WorldRenderer {
     for (let i = 0; i < trail.length; i++) trail[i] *= 0.92;
 
     // ── Resource texture ─────────────────────────────────────────────────────
-    // R = resource, G = poison, B = glyph magnitude (stigmergic memory)
+    // R = resource, G = poison, B = glyph magnitude, A = shared macro-body envelope
     for (let i = 0; i < cells; i++) {
       const v = f.resources[i];
       const p = f.poison[i];
       const g = f.glyphs?.[i] ?? 0;
+      const b = f.body?.[i] ?? 0;
       resData[i*4]   = v;            // R: resource
       resData[i*4+1] = p;            // G: poison concentration
       resData[i*4+2] = g;            // B: glyph magnitude
-      resData[i*4+3] = 255;
+      resData[i*4+3] = b;            // A: macro-body occupancy
     }
 
     // ── Entity texture — evolving bacterial morphology ─────────────────────
@@ -592,33 +620,42 @@ export class WorldRenderer {
       const speciesHue = f.entitySpeciesHue[e]; // 0-255
       const complexity = (f.entityComplexity?.[e] ?? 80) / 255; // 0-1, default ~early
       const motility   = (f.entityMotility?.[e] ?? 128) / 255;  // 0-1
-      const sizeMul    = Math.max(0.7, Math.min(1.95, ((f.entitySize?.[e] ?? 102) / 255) * 2));
+      const colonyMass = Math.max(1, f.entityColonyMass?.[e] ?? 1);
+      const bodyRadius = Math.max(0, f.entityBodyRadius?.[e] ?? 0);
+      const macroMass = Math.min(1, Math.max(0, colonyMass - 1) / 8);
+      const sizeMul = Math.max(0.75, Math.min(5.0, ((f.entitySize?.[e] ?? 102) / 255) * 5)) * (1 + macroMass * 0.18 + bodyRadius * 0.08);
 
       // Write trail — motile entities leave stronger trails
       const ti = f.entityY[e] * W + f.entityX[e];
       const trailStr = energy * (0.5 + motility * 0.5);
       if (trail[ti] < trailStr) trail[ti] = trailStr;
 
-      // ── Body plan classification ─────────────────────────────────────
-      // Shape is synthesized from evolved behavioural traits instead of fixed plans.
+      // ── WorldLaws-driven morphology — evolution decides the base body form ──
+      // WorldLaws set the "species archetype"; entity traits modulate around it.
       const aggression = f.entityAggression[e] / 255;
-
       const hue01 = speciesHue / 255;
       const phase = hue01 * Math.PI * 2 + role * Math.PI;
-      const aspect = morphologyQuality === 0
-        ? 0.85 + 1.15 * clamp01(0.55 * motility + 0.25 * complexity + 0.20 * energy)
-        : 0.70 + 2.05 * clamp01(0.45 * motility + 0.35 * complexity + 0.20 * energy);
-      const curvature = (aggression * 2 - 1) * (morphologyQuality === 0 ? 0.08 + 0.18 * complexity : 0.10 + 0.42 * complexity);
-      const waveAmp = morphologyQuality === 0 ? 0 : motility * (0.08 + 0.34 * (1 - energy * 0.4));
+
+      // Base morphology from the evolved world laws (defaults = moderate bacillus)
+      const mAspect    = this.worldLaws?.morphAspect    ?? 1.2;
+      const mCurvature = this.worldLaws?.morphCurvature ?? 0.08;
+      const mWave      = this.worldLaws?.morphWave      ?? 0.05;
+      const mLobes     = this.worldLaws?.morphLobes     ?? 0.03;
+      const mTaper     = this.worldLaws?.morphTaper     ?? 0.12;
+
+      // Per-entity modulation around the base form
+      const aspect = mAspect + motility * 0.8 + complexity * 0.4;
+      const curvature = (mCurvature + aggression * 0.20) * (hue01 > 0.5 ? 1.0 : -1.0);
+      const waveAmp = morphologyQuality === 0 ? 0 : mWave * (0.3 + motility * 0.7);
       const waveFreq = 1.4 + hue01 * 3.8 + aggression * 1.3;
-      const lobeAmp = morphologyQuality >= 2 ? complexity * (0.05 + 0.18 * (1 - motility)) : 0;
+      const lobeAmp = morphologyQuality >= 2 ? mLobes * (0.4 + complexity * 0.6) : 0;
       const lobeFreq = 2.0 + hue01 * 4.0;
       const taper = morphologyQuality === 0
-        ? 0.06 + 0.20 * (0.55 * aggression + 0.45 * complexity)
-        : 0.08 + 0.40 * (0.55 * aggression + 0.45 * complexity);
+        ? mTaper * 0.5 + aggression * 0.10
+        : mTaper + aggression * 0.20;
       const pinch = clamp01((energy - 0.48) * (morphologyQuality === 0 ? 0.7 : 1.1) + complexity * (morphologyQuality === 0 ? 0.08 : 0.18));
-      const skew = (hue01 * 2 - 1) * (morphologyQuality === 0 ? 0.04 + 0.08 * motility : 0.08 + 0.16 * motility);
-      const contourRipple = morphologyQuality >= 2 ? 0.03 + complexity * 0.10 + motility * 0.04 : 0;
+      const skew = (hue01 * 2 - 1) * (morphologyQuality === 0 ? motility * 0.06 : motility * 0.14);
+      const contourRipple = morphologyQuality >= 2 ? 0.02 + complexity * 0.10 + motility * 0.04 : 0;
       const membraneRuffle = 4 + complexity * 8 + motility * 3;
       /*
 
@@ -672,16 +709,16 @@ export class WorldRenderer {
       const sinA = Math.sin(angle);
 
       // Cell size: slight growth with complexity + energy
-      const cellR = (1.5 + energy * 1.2 + complexity * 0.5) * renderScale * sizeMul;
-      const shapeExtra = cellR * ((morphologyQuality === 0 ? 0.25 : 0.45 + waveAmp * 0.9 + lobeAmp * 0.8 + Math.abs(curvature) * 0.6) + Math.max(0, sizeMul - 1) * 0.22);
+      const cellR = (2.0 + energy * 1.4 + complexity * 0.6 + macroMass * 0.35 + bodyRadius * 0.12) * renderScale * sizeMul;
+      const shapeExtra = cellR * ((morphologyQuality === 0 ? 0.25 : 0.45 + waveAmp * 0.9 + lobeAmp * 0.8 + Math.abs(curvature) * 0.6) + Math.max(0, sizeMul - 1) * 0.22 + macroMass * 0.12);
       const scanR = Math.ceil(cellR + shapeExtra) + 3;
 
       // Membrane thickness: thin (early) → thick ruffled (evolved)
-      const membraneWidth = 0.28 + complexity * 0.20 + Math.max(0, sizeMul - 1) * 0.05;
+      const membraneWidth = 0.28 + complexity * 0.20 + Math.max(0, sizeMul - 1) * 0.05 + macroMass * 0.08 + bodyRadius * 0.02;
       const membraneStart = 1.0 - membraneWidth;
 
       // Internal structure: organelle count and visibility
-      const organelleStr = morphologyQuality >= 2 ? complexity * 0.12 : 0;
+      const organelleStr = morphologyQuality >= 2 ? complexity * 0.12 + macroMass * 0.05 : macroMass * 0.02;
       const organelleFreq = 1.5 + complexity * 3.0;
 
       // Flagella emerge continuously from motility and elongation, not a fixed plan.
@@ -792,7 +829,7 @@ export class WorldRenderer {
             const ruffle = morphologyQuality >= 2 && complexity > 0.3
               ? 1.0 + complexity * 0.15 * Math.sin(pixelAngle * (6 + complexity * 10) + phase * 0.5)
               : 1.0;
-            ringVal     = (0.75 + complexity * 0.20) * base * ruffle;
+            ringVal     = (0.75 + complexity * 0.20 + macroMass * 0.08 + bodyRadius * 0.03) * base * ruffle;
             presenceVal = 1.0;
           } else if (flagellaVal > 0) {
             // Flagella region
@@ -802,8 +839,8 @@ export class WorldRenderer {
             // Phase-contrast outer halo
             const fade = 1.0 - (rr - cellR) / 1.5;
             if (fade <= 0) continue;
-            ringVal     = (0.10 + complexity * 0.08) * fade;
-            presenceVal = fade * 0.55;
+            ringVal     = (0.10 + complexity * 0.08 + macroMass * 0.05) * fade;
+            presenceVal = fade * (0.55 + macroMass * 0.10);
           }
 
           // Energy dims outer glow only

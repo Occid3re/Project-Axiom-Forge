@@ -17,6 +17,8 @@ export interface DecodedEntityFrame {
   entityComplexity: Uint8Array;  // genome weight std dev → 0-255 (evolution stage)
   entityMotility: Uint8Array;    // W2 MOVE column drive → 0-255
   entitySize: Uint8Array;        // simulated growth state → 0-255 maps to ~0..2x size
+  entityColonyMass: Uint8Array;  // colony size / fused-body membership
+  entityBodyRadius: Uint8Array;  // soft body footprint radius in cells
 }
 
 export interface DecodedFieldFrame {
@@ -27,6 +29,7 @@ export interface DecodedFieldFrame {
   signals: Uint8Array;     // W*H*3 uint8
   poison: Uint8Array;      // W*H uint8 — toxin concentration
   glyphs: Uint8Array;      // W*H uint8 — glyph magnitude (stigmergic memory)
+  body: Uint8Array;        // W*H uint8 — macro-body occupancy envelope
 }
 
 const ENTITY_MAGIC = 0x41584645; // "AXFE"
@@ -38,6 +41,7 @@ const FIELD_PLANE_RESOURCES = 1;
 const FIELD_PLANE_SIGNALS = 2;
 const FIELD_PLANE_POISON = 4;
 const FIELD_PLANE_GLYPHS = 8;
+const FIELD_PLANE_BODY = 16;
 
 interface PackedFieldState {
   gridW: number;
@@ -49,6 +53,7 @@ interface PackedFieldState {
   signals: Uint8Array;
   poison: Uint8Array;
   glyphs: Uint8Array;
+  body: Uint8Array;
 }
 
 let lastPackedFieldState: PackedFieldState | null = null;
@@ -171,9 +176,27 @@ export function decodeEntityFrame(buf: ArrayBuffer): DecodedEntityFrame | null {
   const entitySpeciesHue = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityComplexity = u8.slice(offset, offset + entityCount); offset += entityCount;
   const entityMotility   = u8.slice(offset, offset + entityCount); offset += entityCount;
-  const entitySize       = u8.slice(offset, offset + entityCount);
+  const entitySize       = u8.slice(offset, offset + entityCount); offset += entityCount;
+  const entityColonyMass = u8.slice(offset, offset + entityCount); offset += entityCount;
+  const entityBodyRadius = u8.slice(offset, offset + entityCount);
 
-  return { gridW, gridH, entityCount, tick, entityX, entityY, entityEnergy, entityAction, entityAggression, entitySpeciesHue, entityComplexity, entityMotility, entitySize };
+  return {
+    gridW,
+    gridH,
+    entityCount,
+    tick,
+    entityX,
+    entityY,
+    entityEnergy,
+    entityAction,
+    entityAggression,
+    entitySpeciesHue,
+    entityComplexity,
+    entityMotility,
+    entitySize,
+    entityColonyMass,
+    entityBodyRadius,
+  };
 }
 
 export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
@@ -198,7 +221,8 @@ export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
     const packedResources = u8.slice(offset, offset + cells); offset += cells;
     const packedSignals   = u8.slice(offset, offset + cells * 3); offset += cells * 3;
     const packedPoison    = u8.slice(offset, offset + cells); offset += cells;
-    const packedGlyphs    = u8.slice(offset, offset + cells);
+    const packedGlyphs    = u8.slice(offset, offset + cells); offset += cells;
+    const packedBody      = u8.slice(offset, offset + cells);
     lastPackedFieldState = {
       gridW,
       gridH,
@@ -209,6 +233,7 @@ export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
       signals: packedSignals,
       poison: packedPoison,
       glyphs: packedGlyphs,
+      body: packedBody,
     };
   } else if (kind === FIELD_PACKET_KIND_DELTA) {
     const tileSize = Math.max(1, aux0);
@@ -244,6 +269,9 @@ export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
       if (planeMask & FIELD_PLANE_GLYPHS) {
         offset = applyScalarTile(lastPackedFieldState.glyphs, u8, offset, fieldW, tileX, tileY, tileSize, tileW, tileH);
       }
+      if (planeMask & FIELD_PLANE_BODY) {
+        offset = applyScalarTile(lastPackedFieldState.body, u8, offset, fieldW, tileX, tileY, tileSize, tileW, tileH);
+      }
     }
   } else {
     return null;
@@ -255,8 +283,9 @@ export function decodeFieldFrame(buf: ArrayBuffer): DecodedFieldFrame | null {
   const signals = expandSignalField(lastPackedFieldState.signals, gridW, gridH, step);
   const poison = expandScalarField(lastPackedFieldState.poison, gridW, gridH, step);
   const glyphs = expandScalarField(lastPackedFieldState.glyphs, gridW, gridH, step);
+  const body = expandScalarField(lastPackedFieldState.body, gridW, gridH, step);
 
-  return { gridW, gridH, tick, resources, signals, poison, glyphs };
+  return { gridW, gridH, tick, resources, signals, poison, glyphs, body };
 }
 
 export interface ServerMeta {
@@ -274,6 +303,7 @@ export interface ServerMeta {
     speciation: number; interactions: number;
     spatialStructure: number; populationDynamics: number;
     stigmergicUse: number; socialDifferentiation: number;
+    seasonalAdaptation: number; lifetimeLearning: number;
     total: number;
   } | null;
   bestScore: number;
@@ -293,7 +323,8 @@ export interface ServerMeta {
     threatNeighbors: number;
     lockTicksRemaining: number;
     inputs: number[];
-    hidden: number[];
+    hidden1: number[];
+    hidden2: number[];
     probs: number[];
     genome: number[];
   };

@@ -10,15 +10,15 @@
  * generation time ≈ ceil(worldsPerGeneration / numWorkers) × singleWorldTime.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { Worker } from 'worker_threads';
 import { cpus } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { World, type WorldSnapshot, type NeuralSample } from '../src/engine/world.ts';
-import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws } from '../src/engine/world-laws.ts';
+import { type WorldLaws, PRNG, randomLaws, mutateLaws, crossoverLaws, FLOAT_RANGES, INT_RANGES, starterLaws } from '../src/engine/world-laws.ts';
 import { scoreWorld, type WorldScores } from '../src/engine/scoring.ts';
-import { ActionType, GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W1_SIZE, GLYPH_CHANNELS } from '../src/engine/constants.ts';
+import { ActionType, GENOME_LENGTH, NN_HIDDEN, NN_OUTPUTS, NN_W3_OFFSET, GLYPH_CHANNELS } from '../src/engine/constants.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 13;
+const STATE_VERSION = 18; // +1: fusion (fusionThreshold, fusionRate) WorldLaws fields
 
 interface SavedState {
   version: number;
@@ -46,8 +46,8 @@ const EVAL_CONFIG = {
   gridSize:            64,
   worldSteps:        3200,   // 270-weight NN + directional movement needs more ticks
   initialEntities:     50,   // density = 50/(64²) ≈ 0.012, matches display
-  worldsPerGeneration: 12,
-  topK:                 3,
+  worldsPerGeneration: 8,    // reduced from 12: H2=24 doubles W2+W3 cost per entity
+  topK:                3,
   mutationStrength:  0.08,
   scoreWeights: {
     persistence:      0.5,   // survival is necessary but shouldn't dominate
@@ -62,6 +62,8 @@ const EVAL_CONFIG = {
     populationDynamics: 2.3, // reward oscillation, penalize flat lines
     stigmergicUse:    3.0,   // reward balanced deposit/absorb
     socialDifferentiation: 4.5, // strongly reward selective kin behaviour and colonies
+    seasonalAdaptation: 2.0,   // M2: births concentrated at seasonal peaks → temporal memory in use
+    lifetimeLearning:   2.5,   // M5: old entities outforage young → lifetime learning compounds
   },
   // Escalating stagnation tiers
   stagnationMild:           30,   // 25% random, 2× mutation
@@ -69,13 +71,13 @@ const EVAL_CONFIG = {
   stagnationReset:         150,   // full reset sooner — score plateau is deep
   stagnationRandomFraction: 0.25,
   minImprovementRatio:    0.005,  // count smaller improvements as real progress
-  cpuTargetMs:              6.0,  // 270-weight NN + directional scan is expensive; don't penalize rich worlds
+  cpuTargetMs:             10.0,  // raised from 6.0: H2=24 is legitimately more expensive — do not penalize
   cpuPenaltyWeight:         0.05, // near-zero: complex worlds should NOT be penalized for being interesting
 };
 
 const DISPLAY_CONFIG = {
   gridSize:        256,
-  initialEntities: 400,  // fix density mismatch: eval is 50/(64²)=0.012; 400/(256²)=0.006 ≈ half
+  initialEntities: 800,  // eval density = 50/(64²)=0.012; 800/(256²)=0.012 — match eval density so random genomes can find resources
   minLifetimeTicks: 240,
   fieldFrameInterval: 6, // 30fps entities, 5fps field refresh
   fieldDownsample: 2,
@@ -85,6 +87,10 @@ const DISPLAY_CONFIG = {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function clampRange(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function bandScore(value: number, center: number, radius: number): number {
@@ -101,12 +107,18 @@ function scoreShowcaseWorld(scores: WorldScores, laws: WorldLaws): number {
     scores.speciation * 0.08;
 
   const memoryScore =
-    clamp01((laws.memorySize - 2) / 6) * 0.45 +
+    clamp01((laws.memorySize - 2) / 22) * 0.45 +  // /22 because memorySize range is now [3,24]
     bandScore(laws.memoryPersistence, 0.42, 0.30) * 0.55;
   const capacityScore = bandScore(laws.carryingCapacity, 0.12, 0.08);
   const signalScore =
     clamp01((laws.signalChannels - 1) / 3) * 0.4 +
     bandScore(laws.signalDecay, 0.62, 0.24) * 0.6;
+  const sizeScore =
+    bandScore(laws.cellSizeMax, 2.35, 1.0) * 0.58 +
+    bandScore(laws.growthEfficiency, 1.25, 0.75) * 0.42;
+  const fusionScore =
+    bandScore(laws.fusionThreshold, 9, 4) * 0.55 +
+    clamp01(laws.fusionRate / 0.0015) * 0.45;
 
   const mutationPenalty = clamp01((laws.mutationRate * laws.mutationStrength - 0.022) / 0.028);
   const aggressionPenalty = clamp01((laws.attackTransfer - 0.56) / 0.12);
@@ -114,7 +126,13 @@ function scoreShowcaseWorld(scores: WorldScores, laws: WorldLaws): number {
     clamp01((laws.disasterProbability - 0.008) / 0.007) * 0.35 +
     clamp01((laws.driftSpeed - 0.10) / 0.06) * 0.15;
 
-  const structureBonus = 0.78 + memoryScore * 0.12 + capacityScore * 0.06 + signalScore * 0.04;
+  const structureBonus =
+    0.74 +
+    memoryScore * 0.10 +
+    capacityScore * 0.05 +
+    signalScore * 0.04 +
+    sizeScore * 0.04 +
+    fusionScore * 0.03;
   const penaltyMul = Math.max(0.45, 1 - mutationPenalty * 0.32 - aggressionPenalty * 0.10 - chaosPenalty);
 
   return spectacle * structureBonus * penaltyMul;
@@ -143,8 +161,12 @@ class WorkerPool {
     this.size    = numWorkers;
     const ext    = __filename.endsWith('.mjs') ? '.mjs' : '.ts';
     const script = resolve(__dirname, `./eval-worker${ext}`);
+    // In dev (.ts) mode workers need the tsx loader; in bundled (.mjs) mode they don't.
+    const workerOptions = ext === '.ts'
+      ? { execArgv: ['--import', `file://${resolve(__dirname, 'node_modules/tsx/dist/esm/index.mjs')}`] }
+      : {};
     this.workers = Array.from({ length: numWorkers }, () => {
-      const w = new Worker(script);
+      const w = new Worker(script, workerOptions);
       w.on('message', ({ jobId, ...result }: { jobId: number } & EvalWorkerResult) => {
         const job = this.pending.get(jobId);
         if (job) { this.pending.delete(jobId); job.resolve(result); }
@@ -181,10 +203,12 @@ const FIELD_RESOURCE_DELTA_THRESHOLD = 3;
 const FIELD_SIGNAL_DELTA_THRESHOLD = 4;
 const FIELD_POISON_DELTA_THRESHOLD = 3;
 const FIELD_GLYPH_DELTA_THRESHOLD = 3;
+const FIELD_BODY_DELTA_THRESHOLD = 4;
 const FIELD_PLANE_RESOURCES = 1;
 const FIELD_PLANE_SIGNALS = 2;
 const FIELD_PLANE_POISON = 4;
 const FIELD_PLANE_GLYPHS = 8;
+const FIELD_PLANE_BODY = 16;
 
 interface PackedFieldState {
   gridW: number;
@@ -197,6 +221,7 @@ interface PackedFieldState {
   signals: Uint8Array;
   poison: Uint8Array;
   glyphs: Uint8Array;
+  body: Uint8Array;
 }
 
 interface FieldTile {
@@ -219,6 +244,7 @@ function samplePackedFieldState(world: World, tick: number): PackedFieldState {
   const signals = new Uint8Array(outCells * 3);
   const poison = new Uint8Array(outCells);
   const glyphs = new Uint8Array(outCells);
+  const body = new Uint8Array(outCells);
 
   let offset = 0;
   for (let oy = 0; oy < outH; oy++) {
@@ -291,12 +317,27 @@ function samplePackedFieldState(world: World, tick: number): PackedFieldState {
     }
   }
 
-  return { gridW: W, gridH: H, step, outW, outH, tick, resources, signals, poison, glyphs };
+  offset = 0;
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      let sum = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = oy * step + dy;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = ox * step + dx;
+          sum += vs.bodyStrength[sy * W + sx];
+        }
+      }
+      body[offset++] = Math.min(255, Math.round(Math.min(1, sum / (step * step * 5.0)) * 255));
+    }
+  }
+
+  return { gridW: W, gridH: H, step, outW, outH, tick, resources, signals, poison, glyphs, body };
 }
 
 function packFieldKeyframe(state: PackedFieldState): ArrayBuffer {
   const cells = state.outW * state.outH;
-  const totalBytes = FIELD_PACKET_HEADER_BYTES + cells + cells * 3 + cells + cells;
+  const totalBytes = FIELD_PACKET_HEADER_BYTES + cells + cells * 3 + cells + cells + cells;
   const buf = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
   const u8 = new Uint8Array(buf);
@@ -314,7 +355,8 @@ function packFieldKeyframe(state: PackedFieldState): ArrayBuffer {
   u8.set(state.resources, offset); offset += state.resources.length;
   u8.set(state.signals, offset); offset += state.signals.length;
   u8.set(state.poison, offset); offset += state.poison.length;
-  u8.set(state.glyphs, offset);
+  u8.set(state.glyphs, offset); offset += state.glyphs.length;
+  u8.set(state.body, offset);
   return buf;
 }
 
@@ -330,6 +372,7 @@ function computeTilePlaneMask(current: PackedFieldState, previous: PackedFieldSt
       if (Math.abs(current.resources[idx] - previous.resources[idx]) >= FIELD_RESOURCE_DELTA_THRESHOLD) planeMask |= FIELD_PLANE_RESOURCES;
       if (Math.abs(current.poison[idx] - previous.poison[idx]) >= FIELD_POISON_DELTA_THRESHOLD) planeMask |= FIELD_PLANE_POISON;
       if (Math.abs(current.glyphs[idx] - previous.glyphs[idx]) >= FIELD_GLYPH_DELTA_THRESHOLD) planeMask |= FIELD_PLANE_GLYPHS;
+      if (Math.abs(current.body[idx] - previous.body[idx]) >= FIELD_BODY_DELTA_THRESHOLD) planeMask |= FIELD_PLANE_BODY;
       const sig = idx * 3;
       if (
         Math.abs(current.signals[sig] - previous.signals[sig]) >= FIELD_SIGNAL_DELTA_THRESHOLD
@@ -338,7 +381,7 @@ function computeTilePlaneMask(current: PackedFieldState, previous: PackedFieldSt
       ) {
         planeMask |= FIELD_PLANE_SIGNALS;
       }
-      if (planeMask === (FIELD_PLANE_RESOURCES | FIELD_PLANE_SIGNALS | FIELD_PLANE_POISON | FIELD_PLANE_GLYPHS)) {
+      if (planeMask === (FIELD_PLANE_RESOURCES | FIELD_PLANE_SIGNALS | FIELD_PLANE_POISON | FIELD_PLANE_GLYPHS | FIELD_PLANE_BODY)) {
         return planeMask;
       }
     }
@@ -404,6 +447,7 @@ function packFieldDelta(current: PackedFieldState, previous: PackedFieldState): 
     if (tile.planeMask & FIELD_PLANE_SIGNALS) totalBytes += tile.tileW * tile.tileH * 3;
     if (tile.planeMask & FIELD_PLANE_POISON) totalBytes += tile.tileW * tile.tileH;
     if (tile.planeMask & FIELD_PLANE_GLYPHS) totalBytes += tile.tileW * tile.tileH;
+    if (tile.planeMask & FIELD_PLANE_BODY) totalBytes += tile.tileW * tile.tileH;
   }
 
   const buf = new ArrayBuffer(totalBytes);
@@ -429,6 +473,7 @@ function packFieldDelta(current: PackedFieldState, previous: PackedFieldState): 
     if (tile.planeMask & FIELD_PLANE_SIGNALS) offset = copySignalTileToPacket(u8, offset, current.signals, current.outW, tile);
     if (tile.planeMask & FIELD_PLANE_POISON) offset = copyScalarTileToPacket(u8, offset, current.poison, current.outW, tile);
     if (tile.planeMask & FIELD_PLANE_GLYPHS) offset = copyScalarTileToPacket(u8, offset, current.glyphs, current.outW, tile);
+    if (tile.planeMask & FIELD_PLANE_BODY) offset = copyScalarTileToPacket(u8, offset, current.body, current.outW, tile);
   }
 
   return buf;
@@ -443,7 +488,7 @@ export function packFieldFrame(world: World, tick: number): ArrayBuffer {
   const outH = Math.max(1, Math.floor(H / step));
   const outCells = outW * outH;
   // Layout: header(20) + resources(WH) + signals(WH×3) + poison(WH) + glyphs(WH) + entities(N×8)
-  const totalBytes = 20 + outCells + outCells * 3 + outCells + outCells;
+  const totalBytes = 20 + outCells + outCells * 3 + outCells + outCells + outCells;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
@@ -519,6 +564,19 @@ export function packFieldFrame(world: World, tick: number): ArrayBuffer {
       u8[offset++] = Math.min(255, ((sum / (step * step)) * 128) | 0);
     }
   }
+  for (let oy = 0; oy < outH; oy++) {
+    for (let ox = 0; ox < outW; ox++) {
+      let sum = 0;
+      for (let dy = 0; dy < step; dy++) {
+        const sy = oy * step + dy;
+        for (let dx = 0; dx < step; dx++) {
+          const sx = ox * step + dx;
+          sum += vs.bodyStrength[sy * W + sx];
+        }
+      }
+      u8[offset++] = Math.min(255, Math.round(Math.min(1, sum / (step * step * 5.0)) * 255));
+    }
+  }
   return buf;
 }
 
@@ -527,7 +585,7 @@ export function packFieldFrame(world: World, tick: number): ArrayBuffer {
 export function packEntityFrame(world: World, tick: number): ArrayBuffer {
   const vs = world.getVisualState();
   const { gridW: W, gridH: H, entityCount } = vs;
-  const totalBytes = 20 + entityCount * 9;
+  const totalBytes = 20 + entityCount * 11;
 
   const buf  = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
@@ -548,7 +606,7 @@ export function packEntityFrame(world: World, tick: number): ArrayBuffer {
   for (let e = 0; e < entityCount; e++) {
     let attackSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
-      attackSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 8];
+      attackSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W3_OFFSET + j * NN_OUTPUTS + 8];
     }
     u8[offset++] = Math.round(255 / (1 + Math.exp(-attackSum * 0.4)));
   }
@@ -556,8 +614,8 @@ export function packEntityFrame(world: World, tick: number): ArrayBuffer {
   for (let e = 0; e < entityCount; e++) {
     let sigSum = 0, eatSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
-      sigSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 7];
-      eatSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 5];
+      sigSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W3_OFFSET + j * NN_OUTPUTS + 7];
+      eatSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W3_OFFSET + j * NN_OUTPUTS + 5];
     }
     const sigTend = 1 / (1 + Math.exp(-sigSum * 0.3));
     const eatTend = 1 / (1 + Math.exp(-eatSum * 0.3));
@@ -580,16 +638,22 @@ export function packEntityFrame(world: World, tick: number): ArrayBuffer {
   for (let e = 0; e < entityCount; e++) {
     let moveSum = 0;
     for (let j = 0; j < NN_HIDDEN; j++) {
-      moveSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 1]
-               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 2]
-               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 3]
-               + vs.entityGenomes[e * GENOME_LENGTH + NN_W1_SIZE + j * NN_OUTPUTS + 4];
+      moveSum += vs.entityGenomes[e * GENOME_LENGTH + NN_W3_OFFSET + j * NN_OUTPUTS + 1]
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W3_OFFSET + j * NN_OUTPUTS + 2]
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W3_OFFSET + j * NN_OUTPUTS + 3]
+               + vs.entityGenomes[e * GENOME_LENGTH + NN_W3_OFFSET + j * NN_OUTPUTS + 4];
     }
     u8[offset++] = Math.round(255 / (1 + Math.exp(-moveSum * 0.075)));
   }
 
   for (let e = 0; e < entityCount; e++) {
-    u8[offset++] = Math.max(0, Math.min(255, Math.round((vs.entitySize[e] / 2) * 255)));
+    u8[offset++] = Math.max(0, Math.min(255, Math.round((vs.entitySize[e] / 5) * 255)));
+  }
+  for (let e = 0; e < entityCount; e++) {
+    u8[offset++] = vs.entityColonyMass[e];
+  }
+  for (let e = 0; e < entityCount; e++) {
+    u8[offset++] = vs.entityBodyRadius[e];
   }
 
   return buf;
@@ -621,7 +685,8 @@ export interface MetaBroadcast {
     threatNeighbors: number;
     lockTicksRemaining: number;
     inputs: number[];
-    hidden: number[];
+    hidden1: number[];
+    hidden2: number[];
     probs: number[];
     genome: number[];
   };
@@ -640,8 +705,9 @@ export class SimulationController {
   private completedWorldsThisGen = 0;
 
   // Display state
-  private displayWorld:     World | null    = null;
-  private displayTick       = 0;
+  private displayWorld:       World | null    = null;
+  private displayTick         = 0;
+  private displayExtinctions  = 0;
   private displaySnapshots: WorldSnapshot[] = [];
   private displayScores:    WorldScores | null = null;
   private displaySeed       = 1;
@@ -731,7 +797,7 @@ export class SimulationController {
     if (this.population.length === 0) this.seedPopulation();
     // Start display with best known laws immediately
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.showcaseLaws ?? this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
+      this.startDisplayWorld(this.chooseDisplayCandidate('startup'));
     }
 
     while (true) {
@@ -914,11 +980,61 @@ export class SimulationController {
 
   // ── Display loop (called at 30fps) ─────────────────────────────────────
 
-  startDisplayWorld(laws: WorldLaws) {
+  private getDisplayCandidates(): WorldLaws[] {
+    const candidates: WorldLaws[] = [];
+    const pushUnique = (laws: WorldLaws | null | undefined) => {
+      if (!laws) return;
+      if (!candidates.includes(laws)) candidates.push(laws);
+    };
+
+    pushUnique(this.showcaseLaws);
+    pushUnique(this.bestLaws);
+    for (const laws of this.population) {
+      pushUnique(laws);
+      if (candidates.length >= 5) break;
+    }
+    if (candidates.length === 0) candidates.push(starterLaws());
+    return candidates;
+  }
+
+  private chooseDisplayCandidate(reason: 'startup' | 'refresh' | 'extinction' | 'promotion'): WorldLaws {
+    const candidates = this.getDisplayCandidates();
+    if (reason === 'extinction') {
+      return candidates[this.displayExtinctions % candidates.length];
+    }
+    if (reason === 'refresh' && candidates.length > 1) {
+      const rotation = Math.max(0, (this.displayTick / 9000) | 0);
+      return candidates[(this.generation + rotation) % Math.min(candidates.length, 3)];
+    }
+    return candidates[0];
+  }
+
+  private buildDisplayLaws(laws: WorldLaws): WorldLaws {
+    const safetyTier = Math.min(4, this.displayExtinctions);
+    return {
+      ...laws,
+      disasterProbability: Math.min(laws.disasterProbability, 0.0025 + safetyTier * 0.0005),
+      attackTransfer: Math.min(laws.attackTransfer, 0.55),
+      carryingCapacity: Math.max(laws.carryingCapacity, 0.08 + safetyTier * 0.006),
+      resourceRegenRate: Math.max(laws.resourceRegenRate, 0.018 + safetyTier * 0.003),
+      offspringEnergy: Math.max(laws.offspringEnergy, 0.16 + safetyTier * 0.02),
+      deathToxin: Math.min(laws.deathToxin, 0.55),
+      fusionRate: Math.min(laws.fusionRate, 0.0008 + safetyTier * 0.0004),
+      fusionThreshold: Math.max(6, laws.fusionThreshold),
+      cellSizeMax: clampRange(laws.cellSizeMax, 1.35, 3.5),
+      sizeMaintenance: Math.max(laws.sizeMaintenance, 0.0006),
+    };
+  }
+
+  startDisplayWorld(laws: WorldLaws, preserveExtinctionCount = false) {
+    if (!preserveExtinctionCount) this.displayExtinctions = 0;
     this.displaySeed  = this.evalRng.int(0, 0x7fffffff);
+    const safetyTier = Math.min(4, this.displayExtinctions);
+    const displayPhysics = this.buildDisplayLaws(laws);
+    const initialEntities = Math.max(480, DISPLAY_CONFIG.initialEntities - safetyTier * 70);
     this.displayWorld = new World(
-      laws,
-      { gridSize: DISPLAY_CONFIG.gridSize, steps: 999999, initialEntities: DISPLAY_CONFIG.initialEntities },
+      displayPhysics,
+      { gridSize: DISPLAY_CONFIG.gridSize, steps: 999999, initialEntities },
       this.displaySeed,
     );
     this.displayTick      = 0;
@@ -991,7 +1107,7 @@ export class SimulationController {
 
   getBootstrapFrames(): { entities: ArrayBuffer; fields: ArrayBuffer } | null {
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.showcaseLaws ?? this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
+      this.startDisplayWorld(this.chooseDisplayCandidate('startup'));
     }
     const world = this.displayWorld!;
     const baseline = this.lastFieldState ?? samplePackedFieldState(world, this.displayTick);
@@ -1004,7 +1120,7 @@ export class SimulationController {
   /** Step display world once. Call at ~30fps. Returns broadcast data. */
   displayStep(): { entities: ArrayBuffer; fields?: ArrayBuffer; meta: MetaBroadcast } | null {
     if (!this.displayWorld) {
-      this.startDisplayWorld(this.showcaseLaws ?? this.bestLaws ?? this.population[0] ?? randomLaws(this.evalRng));
+      this.startDisplayWorld(this.chooseDisplayCandidate('startup'));
     }
 
     const world = this.displayWorld!;
@@ -1039,17 +1155,13 @@ export class SimulationController {
     }
 
     if (this.displayTick > 300 && snap.population === 0) {
-      this.log('Display world — extinction. Reseeding with showcase laws...');
-      const nextLaws = this.showcaseLaws ?? this.bestLaws;
-      if (nextLaws) this.startDisplayWorld(nextLaws);
+      this.displayExtinctions++;
+      this.log(`Display world — extinction. Rotating showcase candidate (tier ${this.displayExtinctions}).`);
+      this.startDisplayWorld(this.chooseDisplayCandidate('extinction'), true);
     }
 
     if (this.displayTick > 0 && this.displayTick % 9000 === 0) {
-      const nextLaws = this.showcaseLaws ?? this.bestLaws;
-      if (nextLaws) {
-        this.log('Display world — periodic refresh with showcase laws');
-        this.startDisplayWorld(nextLaws);
-      }
+      this.startDisplayWorld(this.chooseDisplayCandidate('refresh'));
     }
 
     const focusSample = this.chooseFocusSample(world);
@@ -1084,7 +1196,8 @@ export class SimulationController {
         threatNeighbors: focusSample.threatNeighbors,
         lockTicksRemaining: Math.max(0, this.focusLockUntilTick - this.displayTick),
         inputs: focusSample.inputs,
-        hidden: focusSample.hidden,
+        hidden1: focusSample.hidden1,
+        hidden2: focusSample.hidden2,
         probs: focusSample.probs,
         genome: focusSample.genome,
       } : undefined,
@@ -1097,5 +1210,78 @@ export class SimulationController {
   private log(msg: string) {
     this.pendingLog = msg;
     console.log(`[sim] ${msg}`);
+  }
+
+  // Called when first viewer connects after idle — shows latest best laws
+  restartDisplay() {
+    const laws = this.getDisplayCandidates()[0];
+    if (laws) this.startDisplayWorld(laws);
+  }
+
+  // ── Admin API ────────────────────────────────────────────────────────────
+
+  getAdminConfig() {
+    return {
+      evalConfig: { ...EVAL_CONFIG, scoreWeights: { ...EVAL_CONFIG.scoreWeights } },
+      displayConfig: { ...DISPLAY_CONFIG },
+      floatRanges: JSON.parse(JSON.stringify(FLOAT_RANGES)),
+      intRanges:   JSON.parse(JSON.stringify(INT_RANGES)),
+      starterLaws: starterLaws(),
+      status: {
+        generation:   this.generation,
+        bestScore:    this.bestScore,
+        population:   this.population.length,
+        workers:      this.workerPool.size,
+        evalSpeed:    this.evalSpeedSample,
+      },
+    };
+  }
+
+  applyAdminConfig(patch: {
+    evalConfig?:    Record<string, unknown>;
+    displayConfig?: Record<string, unknown>;
+    floatRanges?:   Record<string, { min: number; max: number }>;
+    intRanges?:     Record<string, { min: number; max: number }>;
+  }) {
+    if (patch.evalConfig) {
+      const sw = (patch.evalConfig as any).scoreWeights;
+      if (sw && typeof sw === 'object') Object.assign(EVAL_CONFIG.scoreWeights, sw);
+      const rest = { ...patch.evalConfig } as any;
+      delete rest.scoreWeights;
+      Object.assign(EVAL_CONFIG, rest);
+    }
+    if (patch.displayConfig) Object.assign(DISPLAY_CONFIG, patch.displayConfig);
+    if (patch.floatRanges) {
+      for (const [k, v] of Object.entries(patch.floatRanges)) {
+        if (FLOAT_RANGES[k]) Object.assign(FLOAT_RANGES[k], v);
+      }
+    }
+    if (patch.intRanges) {
+      for (const [k, v] of Object.entries(patch.intRanges)) {
+        if (INT_RANGES[k]) Object.assign(INT_RANGES[k], v);
+      }
+    }
+    this.log('[admin] Config updated');
+  }
+
+  resetSimulation() {
+    this.generation            = 0;
+    this.bestScore             = 0;
+    this.bestLaws              = null;
+    this.showcaseScore         = 0;
+    this.showcaseLaws          = null;
+    this.population            = [];
+    this.generationSummaries   = [];
+    this.lastImprovementGen    = 0;
+    this.evalResults           = [];
+    this.completedWorldsThisGen = 0;
+    try {
+      unlinkSync(STATE_PATH);
+    } catch {
+      // State file may not exist yet during a fresh reset.
+    }
+    this.seedPopulation();
+    this.startDisplayWorld(this.chooseDisplayCandidate('startup'));
+    this.log('[admin] Simulation reset');
   }
 }
