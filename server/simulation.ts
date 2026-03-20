@@ -1102,25 +1102,17 @@ export class SimulationController {
     return { fit, viable, preflight };
   }
 
-  private getDisplayPreflightCandidates(sorted?: Array<{ laws: WorldLaws; scores: WorldScores }>): WorldLaws[] {
+  private getDisplayPreflightCandidates(_sorted?: Array<{ laws: WorldLaws; scores: WorldScores }>): WorldLaws[] {
     const candidates: WorldLaws[] = [];
     const pushUnique = (laws: WorldLaws | null | undefined) => {
       if (!laws) return;
       if (!candidates.includes(laws)) candidates.push(laws);
     };
 
+    pushUnique(this.displaySourceLaws);
     pushUnique(this.showcaseLaws);
     pushUnique(this.bestLaws);
-    pushUnique(this.displaySourceLaws);
-    for (const item of sorted ?? []) {
-      pushUnique(item.laws);
-      if (candidates.length >= DISPLAY_PREFLIGHT_CONFIG.maxCandidates + 1) break;
-    }
-    for (const laws of this.population) {
-      pushUnique(laws);
-      if (candidates.length >= DISPLAY_PREFLIGHT_CONFIG.maxCandidates + 1) break;
-    }
-    return candidates.slice(0, DISPLAY_PREFLIGHT_CONFIG.maxCandidates + 1);
+    return candidates;
   }
 
   private async refreshDisplayAssessments(candidates: WorldLaws[]): Promise<void> {
