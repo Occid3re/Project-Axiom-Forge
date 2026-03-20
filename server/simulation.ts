@@ -85,6 +85,18 @@ const DISPLAY_CONFIG = {
   fieldTileSize: 8,
 };
 
+const DISPLAY_PREFLIGHT_CONFIG = {
+  steps: 240,
+  maxCandidates: 2,
+  minAliveFraction: 0.9,
+  minFinalPopulation: 48,
+  minMeanPopulation: 100,
+  maxMeanPopulation: 960,
+  maxAvgTickMs: 18,
+  minFit: 0.42,
+  promotionMargin: 0.05,
+};
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -141,7 +153,7 @@ function scoreShowcaseWorld(scores: WorldScores, laws: WorldLaws): number {
 // ── Worker pool ──────────────────────────────────────────────────────────────
 
 interface WorkerJob {
-  resolve: (result: EvalWorkerResult) => void;
+  resolve: (result: unknown) => void;
   reject:  (err: Error) => void;
 }
 
@@ -149,6 +161,25 @@ interface EvalWorkerResult {
   scores:     WorldScores;
   avgTickMs:  number;
   cpuFactor:  number;
+}
+
+interface DisplayPreflightResult {
+  scores: WorldScores;
+  avgTickMs: number;
+  aliveTicks: number;
+  finalPopulation: number;
+  peakPopulation: number;
+  meanPopulation: number;
+  meanSize: number;
+  maxSize: number;
+  maxColony: number;
+  macroTicks: number;
+}
+
+interface DisplayAssessment {
+  fit: number;
+  viable: boolean;
+  preflight: DisplayPreflightResult;
 }
 
 class WorkerPool {
@@ -177,10 +208,10 @@ class WorkerPool {
   }
 
   /** Dispatch a job to a specific worker (caller chooses slot for round-robin). */
-  submit(workerIdx: number, data: object): Promise<EvalWorkerResult> {
+  submit<T>(workerIdx: number, data: object): Promise<T> {
     return new Promise((resolve, reject) => {
       const id = this.jobId++;
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve: resolve as (result: unknown) => void, reject });
       this.workers[workerIdx % this.workers.length].postMessage({ jobId: id, ...data });
     });
   }
@@ -710,6 +741,8 @@ export class SimulationController {
   private displayExtinctions  = 0;
   private displaySnapshots: WorldSnapshot[] = [];
   private displayScores:    WorldScores | null = null;
+  private displaySourceLaws: WorldLaws | null = null;
+  private displayAssessments = new WeakMap<WorldLaws, DisplayAssessment>();
   private displaySeed       = 1;
   private lastFieldState: PackedFieldState | null = null;
   private lastFieldKeyframeTick = 0;
@@ -797,6 +830,7 @@ export class SimulationController {
     if (this.population.length === 0) this.seedPopulation();
     // Start display with best known laws immediately
     if (!this.displayWorld) {
+      await this.refreshDisplayAssessments(this.getDisplayPreflightCandidates());
       this.startDisplayWorld(this.chooseDisplayCandidate('startup'));
     }
 
@@ -841,37 +875,28 @@ export class SimulationController {
 
         // Check for new best (JS single-threaded: no race condition)
         if (result.scores.total > this.bestScore) {
-          const improvement = this.bestScore > 0
-            ? (result.scores.total - this.bestScore) / this.bestScore
-            : 1;
           this.bestScore         = result.scores.total;
           this.bestLaws          = laws;
           this.lastImprovementGen = this.generation;
           this.log(`New best: ${result.scores.total.toFixed(3)} · Gen ${this.generation} · World ${i + 1}`);
           this.saveState();
-          if (improvement >= EVAL_CONFIG.minImprovementRatio &&
-              this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) {
-            this.startDisplayWorld(this.showcaseLaws ?? laws);
-          }
         }
 
         const showcase = scoreShowcaseWorld(result.scores, laws);
         if (showcase > this.showcaseScore) {
-          const improvement = this.showcaseScore > 0
-            ? (showcase - this.showcaseScore) / this.showcaseScore
-            : 1;
           this.showcaseScore = showcase;
           this.showcaseLaws = laws;
           this.log(`New showcase: ${showcase.toFixed(3)} · Gen ${this.generation} · World ${i + 1}`);
           this.saveState();
-          if (improvement >= 0.015 && this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) {
-            this.startDisplayWorld(laws);
-          }
         }
 
         this.evalResults.push({ laws, scores: result.scores });
       }),
     );
+
+    const sorted = [...this.evalResults].sort((a, b) => b.scores.total - a.scores.total);
+    await this.refreshDisplayAssessments(this.getDisplayPreflightCandidates(sorted));
+    this.maybePromoteDisplayWorld();
 
     this.finishGeneration();
   }
@@ -987,6 +1012,7 @@ export class SimulationController {
       if (!candidates.includes(laws)) candidates.push(laws);
     };
 
+    pushUnique(this.displaySourceLaws);
     pushUnique(this.showcaseLaws);
     pushUnique(this.bestLaws);
     for (const laws of this.population) {
@@ -994,49 +1020,176 @@ export class SimulationController {
       if (candidates.length >= 5) break;
     }
     if (candidates.length === 0) candidates.push(starterLaws());
-    return candidates;
+    return [...candidates].sort((a, b) => this.getDisplayCandidatePriority(b) - this.getDisplayCandidatePriority(a));
   }
 
-  private chooseDisplayCandidate(reason: 'startup' | 'refresh' | 'extinction' | 'promotion'): WorldLaws {
-    const candidates = this.getDisplayCandidates();
-    if (reason === 'extinction') {
-      return candidates[this.displayExtinctions % candidates.length];
-    }
-    if (reason === 'refresh' && candidates.length > 1) {
-      const rotation = Math.max(0, (this.displayTick / 9000) | 0);
-      return candidates[(this.generation + rotation) % Math.min(candidates.length, 3)];
-    }
-    return candidates[0];
+  private getDisplayCandidatePriority(laws: WorldLaws): number {
+    const assessment = this.displayAssessments.get(laws);
+    const bias =
+      (laws === this.showcaseLaws ? 0.08 : 0) +
+      (laws === this.bestLaws ? 0.05 : 0) +
+      (laws === this.displaySourceLaws ? 0.03 : 0);
+
+    if (!assessment) return 0.15 + bias;
+    if (!assessment.viable) return Math.max(0, assessment.fit * 0.35 - 0.15 + bias);
+    return 1 + assessment.fit + bias;
   }
 
-  private buildDisplayLaws(laws: WorldLaws): WorldLaws {
-    const safetyTier = Math.min(4, this.displayExtinctions);
+  private buildDisplayLaws(laws: WorldLaws, safetyTier = this.displayExtinctions): WorldLaws {
+    const boundedTier = Math.min(4, safetyTier);
     return {
       ...laws,
-      disasterProbability: Math.min(laws.disasterProbability, 0.0025 + safetyTier * 0.0005),
+      disasterProbability: Math.min(laws.disasterProbability, 0.0025 + boundedTier * 0.0005),
       attackTransfer: Math.min(laws.attackTransfer, 0.55),
-      carryingCapacity: Math.max(laws.carryingCapacity, 0.08 + safetyTier * 0.006),
-      resourceRegenRate: Math.max(laws.resourceRegenRate, 0.018 + safetyTier * 0.003),
-      offspringEnergy: Math.max(laws.offspringEnergy, 0.16 + safetyTier * 0.02),
+      carryingCapacity: Math.max(laws.carryingCapacity, 0.08 + boundedTier * 0.006),
+      resourceRegenRate: Math.max(laws.resourceRegenRate, 0.018 + boundedTier * 0.003),
+      offspringEnergy: Math.max(laws.offspringEnergy, 0.16 + boundedTier * 0.02),
       deathToxin: Math.min(laws.deathToxin, 0.55),
-      fusionRate: Math.min(laws.fusionRate, 0.0008 + safetyTier * 0.0004),
+      fusionRate: Math.min(laws.fusionRate, 0.0008 + boundedTier * 0.0004),
       fusionThreshold: Math.max(6, laws.fusionThreshold),
       cellSizeMax: clampRange(laws.cellSizeMax, 1.35, 3.5),
       sizeMaintenance: Math.max(laws.sizeMaintenance, 0.0006),
     };
   }
 
+  private scoreDisplayPreflight(result: DisplayPreflightResult): number {
+    const survival = result.aliveTicks / DISPLAY_PREFLIGHT_CONFIG.steps;
+    const populationBand = bandScore(result.meanPopulation, 420, 340);
+    const finalPopulation = clamp01((result.finalPopulation - DISPLAY_PREFLIGHT_CONFIG.minFinalPopulation) / 240);
+    const macroPresence = clamp01(result.macroTicks / (DISPLAY_PREFLIGHT_CONFIG.steps * 0.18));
+    const macroScale = clamp01((result.maxSize - 1.6) / 1.0);
+    const colonyScale = clamp01((result.maxColony - 3) / 5);
+    const cpuPenalty = clamp01((result.avgTickMs - 14) / 10) * 0.18;
+
+    return Math.max(
+      0,
+      survival * 0.28 +
+      populationBand * 0.20 +
+      finalPopulation * 0.08 +
+      result.scores.populationDynamics * 0.08 +
+      result.scores.communication * 0.08 +
+      result.scores.spatialStructure * 0.12 +
+      result.scores.socialDifferentiation * 0.10 +
+      macroPresence * 0.06 +
+      macroScale * 0.05 +
+      colonyScale * 0.05 -
+      cpuPenalty,
+    );
+  }
+
+  private async assessDisplayCandidate(laws: WorldLaws, workerIdx: number): Promise<DisplayAssessment> {
+    const preflightLaws = this.buildDisplayLaws(laws, 0);
+    const preflight = await this.workerPool.submit<DisplayPreflightResult>(workerIdx, {
+      kind: 'display-preflight',
+      laws: preflightLaws,
+      seed: this.evalRng.int(0, 0x7fffffff),
+      evalSteps: DISPLAY_PREFLIGHT_CONFIG.steps,
+      gridSize: DISPLAY_CONFIG.gridSize,
+      initialEntities: DISPLAY_CONFIG.initialEntities,
+      scoreWeights: EVAL_CONFIG.scoreWeights,
+    });
+
+    const fit = this.scoreDisplayPreflight(preflight);
+    const survival = preflight.aliveTicks / DISPLAY_PREFLIGHT_CONFIG.steps;
+    const viable =
+      survival >= DISPLAY_PREFLIGHT_CONFIG.minAliveFraction &&
+      preflight.finalPopulation >= DISPLAY_PREFLIGHT_CONFIG.minFinalPopulation &&
+      preflight.meanPopulation >= DISPLAY_PREFLIGHT_CONFIG.minMeanPopulation &&
+      preflight.meanPopulation <= DISPLAY_PREFLIGHT_CONFIG.maxMeanPopulation &&
+      preflight.avgTickMs <= DISPLAY_PREFLIGHT_CONFIG.maxAvgTickMs &&
+      fit >= DISPLAY_PREFLIGHT_CONFIG.minFit;
+
+    return { fit, viable, preflight };
+  }
+
+  private getDisplayPreflightCandidates(sorted?: Array<{ laws: WorldLaws; scores: WorldScores }>): WorldLaws[] {
+    const candidates: WorldLaws[] = [];
+    const pushUnique = (laws: WorldLaws | null | undefined) => {
+      if (!laws) return;
+      if (!candidates.includes(laws)) candidates.push(laws);
+    };
+
+    pushUnique(this.showcaseLaws);
+    pushUnique(this.bestLaws);
+    pushUnique(this.displaySourceLaws);
+    for (const item of sorted ?? []) {
+      pushUnique(item.laws);
+      if (candidates.length >= DISPLAY_PREFLIGHT_CONFIG.maxCandidates + 1) break;
+    }
+    for (const laws of this.population) {
+      pushUnique(laws);
+      if (candidates.length >= DISPLAY_PREFLIGHT_CONFIG.maxCandidates + 1) break;
+    }
+    return candidates.slice(0, DISPLAY_PREFLIGHT_CONFIG.maxCandidates + 1);
+  }
+
+  private async refreshDisplayAssessments(candidates: WorldLaws[]): Promise<void> {
+    const prioritized = [...candidates];
+    if (this.displaySourceLaws) {
+      const currentIdx = prioritized.indexOf(this.displaySourceLaws);
+      if (currentIdx > 0) {
+        const [current] = prioritized.splice(currentIdx, 1);
+        prioritized.unshift(current);
+      }
+    }
+
+    const pending = prioritized.filter((laws) => !this.displayAssessments.has(laws)).slice(0, DISPLAY_PREFLIGHT_CONFIG.maxCandidates);
+    if (pending.length === 0) return;
+
+    const assessments = await Promise.all(
+      pending.map((laws, idx) => this.assessDisplayCandidate(laws, idx)),
+    );
+    for (let i = 0; i < pending.length; i++) {
+      this.displayAssessments.set(pending[i], assessments[i]);
+    }
+  }
+
+  private maybePromoteDisplayWorld(): void {
+    if (this.displayTick < DISPLAY_CONFIG.minLifetimeTicks) return;
+
+    const candidate = this.chooseDisplayCandidate('promotion');
+    if (!candidate || candidate === this.displaySourceLaws) return;
+
+    const nextAssessment = this.displayAssessments.get(candidate);
+    if (!nextAssessment?.viable) return;
+
+    const currentFit = this.displaySourceLaws
+      ? (this.displayAssessments.get(this.displaySourceLaws)?.fit ?? 0)
+      : 0;
+
+    if (nextAssessment.fit >= currentFit + DISPLAY_PREFLIGHT_CONFIG.promotionMargin) {
+      this.log(`Display promotion — preflight fit ${nextAssessment.fit.toFixed(3)}.`);
+      this.startDisplayWorld(candidate);
+    }
+  }
+
+  private chooseDisplayCandidate(reason: 'startup' | 'refresh' | 'extinction' | 'promotion'): WorldLaws {
+    const candidates = this.getDisplayCandidates();
+    const viable = candidates.filter((laws) => this.displayAssessments.get(laws)?.viable);
+    const pool = viable.length > 0 ? viable : candidates;
+
+    if (reason === 'extinction') {
+      return pool[this.displayExtinctions % pool.length];
+    }
+    if (reason === 'refresh' && pool.length > 1) {
+      const rotation = Math.max(0, (this.displayTick / 9000) | 0);
+      return pool[(this.generation + rotation) % Math.min(pool.length, 3)];
+    }
+    return pool[0];
+  }
+
   startDisplayWorld(laws: WorldLaws, preserveExtinctionCount = false) {
     if (!preserveExtinctionCount) this.displayExtinctions = 0;
     this.displaySeed  = this.evalRng.int(0, 0x7fffffff);
     const safetyTier = Math.min(4, this.displayExtinctions);
-    const displayPhysics = this.buildDisplayLaws(laws);
+    const displayPhysics = this.buildDisplayLaws(laws, safetyTier);
     const initialEntities = Math.max(480, DISPLAY_CONFIG.initialEntities - safetyTier * 70);
     this.displayWorld = new World(
       displayPhysics,
       { gridSize: DISPLAY_CONFIG.gridSize, steps: 999999, initialEntities },
       this.displaySeed,
     );
+    this.displaySourceLaws = laws;
     this.displayTick      = 0;
     this.displaySnapshots = [];
     this.displayScores    = null;
@@ -1216,6 +1369,15 @@ export class SimulationController {
   restartDisplay() {
     const laws = this.getDisplayCandidates()[0];
     if (laws) this.startDisplayWorld(laws);
+    void this.refreshDisplayAssessments(this.getDisplayPreflightCandidates())
+      .then(() => {
+        if (!this.displayWorld || this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) return;
+        const candidate = this.chooseDisplayCandidate('startup');
+        if (candidate !== this.displaySourceLaws && this.displayAssessments.get(candidate)?.viable) {
+          this.startDisplayWorld(candidate);
+        }
+      })
+      .catch((err) => console.error('[sim] Display preflight refresh failed:', err));
   }
 
   // ── Admin API ────────────────────────────────────────────────────────────
@@ -1282,6 +1444,15 @@ export class SimulationController {
     }
     this.seedPopulation();
     this.startDisplayWorld(this.chooseDisplayCandidate('startup'));
+    void this.refreshDisplayAssessments(this.getDisplayPreflightCandidates())
+      .then(() => {
+        if (!this.displayWorld || this.displayTick >= DISPLAY_CONFIG.minLifetimeTicks) return;
+        const candidate = this.chooseDisplayCandidate('startup');
+        if (candidate !== this.displaySourceLaws && this.displayAssessments.get(candidate)?.viable) {
+          this.startDisplayWorld(candidate);
+        }
+      })
+      .catch((err) => console.error('[sim] Display preflight refresh failed:', err));
     this.log('[admin] Simulation reset');
   }
 }

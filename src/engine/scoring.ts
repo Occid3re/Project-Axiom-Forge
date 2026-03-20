@@ -28,6 +28,8 @@ export interface WorldScores {
   populationDynamics: number;
   stigmergicUse: number;
   socialDifferentiation: number;
+  seasonalAdaptation: number;    // M2: birth-phase concentration relative to seasonal cycle
+  lifetimeLearning: number;      // M5: old entities harvest more efficiently than young ones
   total: number;
 }
 
@@ -38,7 +40,7 @@ export function scoreWorld(
 ): WorldScores {
   const snaps = history.snapshots;
   if (snaps.length === 0) {
-    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, interactions: 0, spatialStructure: 0, populationDynamics: 0, stigmergicUse: 0, socialDifferentiation: 0, total: 0 };
+    return { persistence: 0, diversity: 0, complexityGrowth: 0, communication: 0, envStructure: 0, adaptability: 0, speciation: 0, interactions: 0, spatialStructure: 0, populationDynamics: 0, stigmergicUse: 0, socialDifferentiation: 0, seasonalAdaptation: 0, lifetimeLearning: 0, total: 0 };
   }
 
   // Mutation chaos factor: high mutRate × mutStrength = cheap diversity → discount
@@ -56,6 +58,8 @@ export function scoreWorld(
   const populationDynamics = scorePopulationDynamics(snaps);
   const stigmergicUse = scoreStigmergicUse(snaps);
   const socialDifferentiation = scoreSocialDifferentiation(snaps);
+  const seasonalAdaptation = scoreSeasonalAdaptation(snaps, laws.seasonLength ?? 0);
+  const lifetimeLearning   = scoreLifetimeLearning(snaps);
 
   const total =
     (weights.persistence ?? 1) * persistence +
@@ -69,9 +73,11 @@ export function scoreWorld(
     (weights.spatialStructure ?? 0) * spatialStructure +
     (weights.populationDynamics ?? 0) * populationDynamics +
     (weights.stigmergicUse ?? 0) * stigmergicUse +
-    (weights.socialDifferentiation ?? 0) * socialDifferentiation;
+    (weights.socialDifferentiation ?? 0) * socialDifferentiation +
+    (weights.seasonalAdaptation ?? 0) * seasonalAdaptation +
+    (weights.lifetimeLearning  ?? 0) * lifetimeLearning;
 
-  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, interactions, spatialStructure, populationDynamics, stigmergicUse, socialDifferentiation, total };
+  return { persistence, diversity, complexityGrowth, communication, envStructure, adaptability, speciation, interactions, spatialStructure, populationDynamics, stigmergicUse, socialDifferentiation, seasonalAdaptation, lifetimeLearning, total };
 }
 
 function scorePersistence(snaps: WorldSnapshot[]): number {
@@ -247,11 +253,29 @@ function scoreSpatialStructure(snaps: WorldSnapshot[]): number {
   const poisonCov = snaps.map(s => s.poisonCoverage);
   const poisonVar = sampleVariance(poisonCov);
   const poisonPresent = mean(poisonCov) > 0.01 ? 0.3 : 0;
+  const sizeMeans = snaps.map(s => s.meanSize);
+  const sizeVar = sampleVariance(sizeMeans);
+  const maxMacro = Math.max(...snaps.map(s => s.maxSize));
+  const largeFraction = mean(snaps.map(s => s.population > 0 ? s.largeOrganisms / s.population : 0));
+  const macroRarity = Math.max(0, 1 - Math.abs(largeFraction - 0.10) / 0.10);
+  const macroPresence = Math.max(0, Math.min(1, (maxMacro - 1.45) / 1.1));
+  const nichePersistence = scoreNichePersistence(snaps);
+  const macroLongevity = scoreMacroLongevity(snaps);
 
   const meanPop = mean(snaps.map(s => s.population));
   const overflowPenalty = meanPop > 2000 ? Math.min(0.5, (meanPop - 2000) / 4000) : 0;
 
-  const rawScore = Math.min(1, (birthVar + deathVar) * 30 + poisonVar * 10 + poisonPresent);
+  const rawScore = Math.min(
+    1,
+    (birthVar + deathVar) * 30
+    + poisonVar * 10
+    + poisonPresent
+    + sizeVar * 5
+    + macroRarity * 0.25
+    + macroPresence * 0.16
+    + nichePersistence * 0.30
+    + macroLongevity * 0.22,
+  );
   return Math.max(0, rawScore - overflowPenalty);
 }
 
@@ -347,6 +371,11 @@ function scoreSocialDifferentiation(snaps: WorldSnapshot[]): number {
   const colonyFraction = mean(popSnaps.map(s => s.fusedMembers / Math.max(1, s.population)));
   const colonySizeScore = mean(popSnaps.map(s => Math.min(1, Math.max(0, s.largestColony - 1) / 4)));
   const colonyBirthScore = mean(popSnaps.map(s => s.births > 0 ? s.colonyBirths / s.births : 0));
+  const macroPresence = mean(popSnaps.map(s => Math.max(0, Math.min(1, (s.maxSize - 1.8) / 1.2))));
+  const largeFraction = mean(popSnaps.map(s => s.largeOrganisms / Math.max(1, s.population)));
+  const macroBalance = Math.max(0, 1 - Math.abs(largeFraction - 0.09) / 0.09);
+  const macroLongevity = scoreMacroLongevity(popSnaps);
+  const nichePersistence = scoreNichePersistence(popSnaps);
 
   // Selective societies do both: support kin and punish outsiders under the same physics.
   const socialCore = Math.sqrt(cooperationScore * aggressionScore) * exposureBalance;
@@ -355,10 +384,159 @@ function scoreSocialDifferentiation(snaps: WorldSnapshot[]): number {
     colonySizeScore * 0.35 +
     Math.min(1, colonyBirthScore * 2.5) * 0.20;
 
-  return Math.min(1, socialCore * 0.65 + colonyCore * 0.35);
+  return Math.min(
+    1,
+    socialCore * 0.48 +
+    colonyCore * 0.24 +
+    macroPresence * 0.08 +
+    macroBalance * 0.05 +
+    macroLongevity * 0.09 +
+    nichePersistence * 0.06,
+  );
+}
+
+/**
+ * M5 — Lifetime learning: do old entities forage more efficiently than young ones?
+ *
+ * Uses harvestEfficiencyRatio from each snapshot: Q4_eats/age ÷ Q1_eats/age.
+ * Baseline (no learning): ratio ≈ 1.0 — young and old are equally efficient.
+ * Learning signal: ratio > 1.2 — older entities have learned better foraging routes.
+ *
+ * Score = clamp01((meanRatio - 1.0) / 0.5) so:
+ *   ratio=1.0 → score=0.0 (no learning)
+ *   ratio=1.2 → score=0.4 (moderate learning)
+ *   ratio=1.5 → score=1.0 (strong learning, pass threshold)
+ *
+ * Only meaningful after enough deaths have accumulated; use second half of run.
+ */
+function scoreLifetimeLearning(snaps: WorldSnapshot[]): number {
+  if (snaps.length < 40) return 0;
+  // Use second half of run — early ticks don't have enough Q4 deaths yet
+  const half = Math.floor(snaps.length / 2);
+  const lateSnaps = snaps.slice(half).filter(s => s.harvestEfficiencyRatio > 0);
+  if (lateSnaps.length < 10) return 0;
+  const meanRatio = mean(lateSnaps.map(s => s.harvestEfficiencyRatio));
+  return Math.max(0, Math.min(1, (meanRatio - 1.0) / 0.5));
+}
+
+/**
+ * M2 — Seasonal adaptation: are births concentrated at specific phases of the resource cycle?
+ *
+ * Method: bin births by season phase into 8 buckets. Compute Shannon entropy of the
+ * distribution. A uniform distribution (no adaptation) has entropy = log(8) ≈ 2.08 nats.
+ * A perfectly concentrated distribution has entropy = 0.
+ * Score = 1 - H / log(8), so 0 = no adaptation, 1 = perfect phase-locking.
+ *
+ * Pass threshold: score > 0.18 (uniform = 0.0, random noise ≈ 0.02–0.05).
+ * If seasonLength ≤ 0 the world has no season; score is 0.
+ */
+function scoreSeasonalAdaptation(snaps: WorldSnapshot[], seasonLength: number): number {
+  if (seasonLength <= 0 || snaps.length < seasonLength) return 0;
+
+  const BINS = 8;
+  const counts = new Float64Array(BINS);
+  for (const s of snaps) {
+    if (s.births <= 0) continue;
+    const phase = (s.tick % seasonLength) / seasonLength; // [0, 1)
+    const bin   = Math.min(BINS - 1, Math.floor(phase * BINS));
+    counts[bin] += s.births;
+  }
+
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total < 10) return 0; // not enough births to measure
+
+  let H = 0;
+  for (let b = 0; b < BINS; b++) {
+    const p = counts[b] / total;
+    if (p > 1e-10) H -= p * Math.log(p);
+  }
+
+  const maxH = Math.log(BINS); // entropy of uniform distribution
+  return Math.max(0, 1 - H / maxH);
 }
 
 // --- Utilities ---
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function bandScore(value: number, center: number, radius: number): number {
+  return Math.max(0, 1 - Math.abs(value - center) / radius);
+}
+
+function scoreNichePersistence(snaps: WorldSnapshot[]): number {
+  if (snaps.length < 30) return 0;
+  const active = snaps.filter((s) => s.population > 12);
+  if (active.length < 18) return 0;
+
+  let microTicks = 0;
+  let macroTicks = 0;
+  let coexistTicks = 0;
+  let structuredTicks = 0;
+  let longestMacroRun = 0;
+  let macroRun = 0;
+
+  for (const snap of active) {
+    const largeFraction = snap.population > 0 ? snap.largeOrganisms / snap.population : 0;
+    const macroPresent = snap.maxSize > 1.95 || snap.largestColony >= 4 || largeFraction > 0.035;
+    const microPresent = largeFraction < 0.24;
+    const structured = snap.largestColony >= 3 || snap.maxSize > 1.7 || snap.meanSize > 1.08;
+
+    if (microPresent) microTicks++;
+    if (macroPresent) {
+      macroTicks++;
+      macroRun++;
+      if (macroRun > longestMacroRun) longestMacroRun = macroRun;
+    } else {
+      macroRun = 0;
+    }
+    if (structured) structuredTicks++;
+    if (microPresent && macroPresent) coexistTicks++;
+  }
+
+  const microScore = clamp01(microTicks / (active.length * 0.75));
+  const macroScore = clamp01(macroTicks / (active.length * 0.28));
+  const coexistence = clamp01(coexistTicks / (active.length * 0.22));
+  const continuity = clamp01(longestMacroRun / Math.max(8, active.length * 0.18));
+  const structure = clamp01(structuredTicks / (active.length * 0.6));
+
+  return Math.min(1, microScore * 0.20 + macroScore * 0.20 + coexistence * 0.34 + continuity * 0.16 + structure * 0.10);
+}
+
+function scoreMacroLongevity(snaps: WorldSnapshot[]): number {
+  if (snaps.length < 30) return 0;
+  const active = snaps.filter((s) => s.population > 12);
+  if (active.length < 18) return 0;
+
+  let macroTicks = 0;
+  let longestRun = 0;
+  let currentRun = 0;
+  let largestBody = 0;
+  let totalLargeFraction = 0;
+
+  for (const snap of active) {
+    const largeFraction = snap.population > 0 ? snap.largeOrganisms / snap.population : 0;
+    const macroPresent = snap.maxSize > 1.95 || snap.largestColony >= 4 || largeFraction > 0.035;
+
+    totalLargeFraction += largeFraction;
+    if (snap.maxSize > largestBody) largestBody = snap.maxSize;
+    if (macroPresent) {
+      macroTicks++;
+      currentRun++;
+      if (currentRun > longestRun) longestRun = currentRun;
+    } else {
+      currentRun = 0;
+    }
+  }
+
+  const presence = clamp01(macroTicks / (active.length * 0.20));
+  const continuity = clamp01(longestRun / Math.max(10, active.length * 0.16));
+  const sizeScore = clamp01((largestBody - 1.9) / 1.3);
+  const balance = bandScore(totalLargeFraction / active.length, 0.08, 0.08);
+
+  return Math.min(1, presence * 0.36 + continuity * 0.34 + sizeScore * 0.20 + balance * 0.10);
+}
 
 function mean(arr: number[]): number {
   if (arr.length === 0) return 0;

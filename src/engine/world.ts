@@ -684,9 +684,66 @@ export class World {
     const members = this.colonyMembers[root];
     if (members <= 1) return localAction;
 
+    const { entities } = this;
     const rootAction = this.entities.action[root] as ActionType;
     const reserveNorm = this.getColonyReserve(root) / Math.max(0.001, (this.laws.energyCap ?? 1.5) * (0.75 + members * 0.4));
-    const coherence = Math.min(0.78, 0.18 + (members - 1) * 0.07 + reserveNorm * 0.18);
+    const rootEnergyNorm = Math.min(1.4, entities.energy[root] / this.getEffectiveEnergyCap(root));
+    const localEnergyNorm = Math.min(1.4, entities.energy[i] / this.getEffectiveEnergyCap(i));
+    const threatPressure = threatCount / Math.max(1, kinCount + threatCount);
+    const macroScale =
+      Math.min(1, Math.max(0, members - 1) / Math.max(3, (this.laws.fusionThreshold ?? 6) - 1)) * 0.65 +
+      Math.min(1, Math.max(0, entities.size[root] - 1.35) / 1.6) * 0.35;
+    const coherence = Math.min(0.88, 0.22 + (members - 1) * 0.06 + reserveNorm * 0.15 + macroScale * 0.12);
+    const embattled = threatPressure > 0.28 || (rootAction === ActionType.ATTACK && threatCount > 0);
+    const hungry = reserveNorm < 0.24 || rootEnergyNorm < 0.54 || localEnergyNorm < 0.46;
+    const fertile =
+      reserveNorm > 0.42 &&
+      rootEnergyNorm > 0.72 &&
+      members >= Math.max(4, (this.laws.fusionThreshold ?? 6) - 1);
+
+    if (embattled) {
+      if (rootAction >= ActionType.MOVE_N && rootAction <= ActionType.MOVE_W) {
+        if (localAction === ActionType.IDLE || localAction === ActionType.EAT || localAction === ActionType.REPRODUCE) {
+          if (this.rng.random() < coherence * 0.75) return rootAction;
+        }
+      }
+      if (threatCount > 0 && this.rng.random() < coherence * (0.50 + macroScale * 0.25)) {
+        return ActionType.ATTACK;
+      }
+    }
+
+    if (hungry) {
+      if (rootAction >= ActionType.MOVE_N && rootAction <= ActionType.MOVE_W) {
+        if (
+          localAction === ActionType.IDLE ||
+          localAction === ActionType.SIGNAL ||
+          localAction === ActionType.DEPOSIT ||
+          localAction === ActionType.ABSORB
+        ) {
+          if (this.rng.random() < coherence * 0.55) return rootAction;
+        }
+      }
+      if (
+        (rootAction === ActionType.EAT || localAction === ActionType.EAT) &&
+        this.rng.random() < coherence * 0.60
+      ) {
+        return ActionType.EAT;
+      }
+    }
+
+    if (fertile && rootAction === ActionType.REPRODUCE && this.rng.random() < coherence * 0.46) {
+      return ActionType.REPRODUCE;
+    }
+
+    if (
+      !embattled &&
+      reserveNorm > 0.28 &&
+      kinCount > 0 &&
+      (rootAction === ActionType.SIGNAL || rootAction === ActionType.DEPOSIT || rootAction === ActionType.ABSORB) &&
+      this.rng.random() < coherence * 0.62
+    ) {
+      return rootAction;
+    }
 
     if (rootAction >= ActionType.MOVE_N && rootAction <= ActionType.MOVE_W) {
       if (
@@ -698,16 +755,16 @@ export class World {
       }
     }
 
-    if (rootAction === ActionType.ATTACK && threatCount > 0 && this.rng.random() < coherence * 0.8) {
+    if (rootAction === ActionType.ATTACK && threatCount > 0 && this.rng.random() < coherence * (0.72 + macroScale * 0.12)) {
       return ActionType.ATTACK;
     }
-    if (rootAction === ActionType.REPRODUCE && members >= (this.laws.fusionThreshold ?? 6) && this.rng.random() < coherence * 0.35) {
+    if (rootAction === ActionType.REPRODUCE && fertile && this.rng.random() < coherence * 0.38) {
       return ActionType.REPRODUCE;
     }
     if (
       (rootAction === ActionType.SIGNAL || rootAction === ActionType.DEPOSIT || rootAction === ActionType.ABSORB)
       && kinCount > 0
-      && this.rng.random() < coherence * 0.55
+      && this.rng.random() < coherence * 0.52
     ) {
       return rootAction;
     }
