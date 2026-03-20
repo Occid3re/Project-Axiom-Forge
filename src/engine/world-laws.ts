@@ -34,6 +34,18 @@ export interface WorldLaws {
   disasterProbability: number;
   terrainVariability: number;
 
+  // Seasonality — spatially varying resource cycle.
+  // Different grid regions peak at different times (diagonal phase gradient).
+  // seasonLength: ticks per full cycle. Must be < maxAge for cross-cycle memory to pay off.
+  // seasonAmplitude: fractional capacity swing; hard floor 0.30 prevents meta-evolution escaping pressure.
+  seasonLength:    number;  // INT 200–450
+  seasonAmplitude: number;  // FLOAT 0.30–0.65
+
+  // Perceptual noise — applied only to directional resource + entity inputs (inputs 4–11).
+  // Leaves signal/glyph inputs clean so communication can still evolve.
+  // Hard floor 0.04 prevents meta-evolution escaping to a fully observable world.
+  perceptNoise: number;     // FLOAT 0.04–0.16
+
   // Perception
   maxPerceptionRadius: number;
 
@@ -73,6 +85,22 @@ export interface WorldLaws {
   // Environment
   driftSpeed: number;       // 0.0–0.4: strength of environmental current pushing entities
 
+  // Multicellular fusion — colonies above threshold can collapse into one mega-entity
+  fusionThreshold: number; // 2–10: min colony members needed to trigger fusion
+  fusionRate:      number; // 0.0–0.05: probability per tick that an eligible colony fuses
+
+  // Cell growth dynamics — how large entities can grow and at what cost
+  cellSizeMax:      number; // 1.0–5.0: maximum grown size multiplier
+  growthEfficiency: number; // 0.3–3.5: steepness of energy→size conversion
+  sizeMaintenance:  number; // 0.0002–0.006: energy drain per size unit above 1 per tick
+
+  // Cell morphology — evolvable base body form (entities modulate around these)
+  morphAspect:    number;   // 0.8–3.5: base elongation (1=sphere, 3=long rod)
+  morphCurvature: number;   // 0.0–0.7: base curvature (0=straight, 0.7=strong comma)
+  morphWave:      number;   // 0.0–0.7: base sinusoidal wave amplitude (spirillum)
+  morphLobes:     number;   // 0.0–0.6: base pseudopod lobe amplitude (amoeba)
+  morphTaper:     number;   // 0.0–0.7: base spindle taper (0=cylinder, 0.7=fusiform)
+
   // Stigmergic memory (glyph grid)
   glyphDecay: number;       // 0.990–0.999: per-tick glyph persistence (half-life 693–6931 ticks)
   depositCost: number;      // 0.0–0.03: energy cost per DEPOSIT action
@@ -88,8 +116,8 @@ interface FloatRange {
   max: number;
 }
 
-const FLOAT_RANGES: Record<string, FloatRange> = {
-  reproductionCost: { min: 0.1, max: 1.0 },
+export const FLOAT_RANGES: Record<string, FloatRange> = {
+  reproductionCost: { min: 0.45, max: 1.0 },
   offspringEnergy: { min: 0.05, max: 0.8 },
   mutationRate: { min: 0.01, max: 0.28 },
   mutationStrength: { min: 0.01, max: 0.18 },
@@ -102,7 +130,7 @@ const FLOAT_RANGES: Record<string, FloatRange> = {
   memoryPersistence: { min: 0.16, max: 0.82 },
   disasterProbability: { min: 0.0, max: 0.015 },
   terrainVariability: { min: 0.0, max: 1.0 },
-  carryingCapacity: { min: 0.05, max: 0.24 },
+  carryingCapacity: { min: 0.04, max: 0.14 },
   poisonStrength: { min: 0.0, max: 0.3 },
   deathToxin: { min: 0.0, max: 0.8 },
   cooperationBonus: { min: 0.0, max: 0.02 },
@@ -116,18 +144,34 @@ const FLOAT_RANGES: Record<string, FloatRange> = {
   absorbCost: { min: 0.0, max: 0.012 },
   absorbRate: { min: 0.0, max: 0.3 },
   kinThreshold: { min: 0.72, max: 0.95 },
+  seasonAmplitude: { min: 0.30, max: 0.65 },
+  perceptNoise:    { min: 0.04, max: 0.16 },
+  // Fusion
+  fusionRate:       { min: 0.0,    max: 0.003 },
+  // Growth
+  cellSizeMax:      { min: 1.0,    max: 4.0   },
+  growthEfficiency: { min: 0.3,    max: 2.5   },
+  sizeMaintenance:  { min: 0.0002, max: 0.003 },
+  // Morphology
+  morphAspect:    { min: 0.8, max: 3.5 },
+  morphCurvature: { min: 0.0, max: 0.7 },
+  morphWave:      { min: 0.0, max: 0.7 },
+  morphLobes:     { min: 0.0, max: 0.6 },
+  morphTaper:     { min: 0.0, max: 0.7 },
 };
 
-const INT_RANGES: Record<string, { min: number; max: number }> = {
+export const INT_RANGES: Record<string, { min: number; max: number }> = {
+  fusionThreshold: { min: 6, max: 16 },
   signalRange: { min: 1, max: 8 },
   signalChannels: { min: 1, max: 6 },
-  memorySize: { min: 3, max: 16 },
+  memorySize: { min: 3, max: 24 },       // raised ceiling to match NN_HIDDEN_2=24
   maxPerceptionRadius: { min: 1, max: 6 },
-  maxAge: { min: 200, max: 800 },
+  maxAge: { min: 480, max: 2200 },       // long enough to span a season, short enough to force visible turnover
   moveSpeed: { min: 1, max: 3 },
   attackRange: { min: 1, max: 3 },
   spawnDistance: { min: 1, max: 3 },
   crowdingThreshold: { min: 3, max: 8 },
+  seasonLength: { min: 200, max: 450 },  // capped at 450: maxAge floor (500) must exceed seasonLength
 };
 
 // --- Seeded PRNG (xoshiro128**) for deterministic runs ---
@@ -229,6 +273,19 @@ export function randomLaws(rng: PRNG): WorldLaws {
     absorbCost: rng.uniform(FLOAT_RANGES.absorbCost.min, FLOAT_RANGES.absorbCost.max),
     absorbRate: rng.uniform(FLOAT_RANGES.absorbRate.min, FLOAT_RANGES.absorbRate.max),
     kinThreshold: rng.uniform(FLOAT_RANGES.kinThreshold.min, FLOAT_RANGES.kinThreshold.max),
+    seasonLength:    rng.int(INT_RANGES.seasonLength.min, INT_RANGES.seasonLength.max),
+    seasonAmplitude: rng.uniform(FLOAT_RANGES.seasonAmplitude.min, FLOAT_RANGES.seasonAmplitude.max),
+    perceptNoise:    rng.uniform(FLOAT_RANGES.perceptNoise.min, FLOAT_RANGES.perceptNoise.max),
+    fusionThreshold:  rng.int(INT_RANGES.fusionThreshold.min,       INT_RANGES.fusionThreshold.max),
+    fusionRate:       rng.uniform(FLOAT_RANGES.fusionRate.min,       FLOAT_RANGES.fusionRate.max),
+    cellSizeMax:      rng.uniform(FLOAT_RANGES.cellSizeMax.min,      FLOAT_RANGES.cellSizeMax.max),
+    growthEfficiency: rng.uniform(FLOAT_RANGES.growthEfficiency.min, FLOAT_RANGES.growthEfficiency.max),
+    sizeMaintenance:  rng.uniform(FLOAT_RANGES.sizeMaintenance.min,  FLOAT_RANGES.sizeMaintenance.max),
+    morphAspect:    rng.uniform(FLOAT_RANGES.morphAspect.min,    FLOAT_RANGES.morphAspect.max),
+    morphCurvature: rng.uniform(FLOAT_RANGES.morphCurvature.min, FLOAT_RANGES.morphCurvature.max),
+    morphWave:      rng.uniform(FLOAT_RANGES.morphWave.min,      FLOAT_RANGES.morphWave.max),
+    morphLobes:     rng.uniform(FLOAT_RANGES.morphLobes.min,     FLOAT_RANGES.morphLobes.max),
+    morphTaper:     rng.uniform(FLOAT_RANGES.morphTaper.min,     FLOAT_RANGES.morphTaper.max),
   };
 }
 
@@ -262,15 +319,15 @@ export function mutateLaws(laws: WorldLaws, rng: PRNG, strength: number = 0.1): 
  */
 export function starterLaws(): WorldLaws {
   return {
-    reproductionCost:     0.28,
+    reproductionCost:     0.55,
     offspringEnergy:      0.20,
     mutationRate:         0.06,
     mutationStrength:     0.06,
     sexualReproduction:   true,
-    resourceRegenRate:    0.028,
-    eatGain:              0.42,
-    moveCost:             0.007,
-    idleCost:             0.004,
+    resourceRegenRate:    0.040,
+    eatGain:              0.52,
+    moveCost:             0.006,
+    idleCost:             0.003,
     attackTransfer:       0.50,
     signalRange:          4,
     signalChannels:       3,
@@ -281,7 +338,7 @@ export function starterLaws(): WorldLaws {
     disasterProbability:  0.003,
     terrainVariability:   0.65,
     maxPerceptionRadius:  3,
-    maxAge:               300,
+    maxAge:               1200,
     carryingCapacity:     0.10,
     poisonStrength:       0.05,
     deathToxin:           0.25,
@@ -300,6 +357,19 @@ export function starterLaws(): WorldLaws {
     absorbCost:           0.005,
     absorbRate:           0.1,
     kinThreshold:         0.8,
+    seasonLength:         280,   // 11.4 cycles per 3200-step eval; entity at minAge(500) lives 1.79 cycles
+    seasonAmplitude:      0.45,  // trough = 55% capacity, peak = 100%
+    perceptNoise:         0.09,  // σ=0.09 on directional resource+entity inputs [4–11] only
+    fusionThreshold:      6,
+    fusionRate:           0.0,
+    cellSizeMax:          2.8,
+    growthEfficiency:     1.6,
+    sizeMaintenance:      0.0014,
+    morphAspect:          1.2,
+    morphCurvature:       0.08,
+    morphWave:            0.05,
+    morphLobes:           0.03,
+    morphTaper:           0.12,
   };
 }
 

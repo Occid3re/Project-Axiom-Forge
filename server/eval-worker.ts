@@ -18,7 +18,7 @@ const DEFAULT_EVAL_STEPS    = 3200;
 const GRID_SIZE             = 64;
 const INITIAL_ENTITIES      = 50;
 const DISPLAY_PREFLIGHT_GRID_SIZE = 256;
-const DISPLAY_PREFLIGHT_INITIAL_ENTITIES = 800;
+const DISPLAY_PREFLIGHT_INITIAL_ENTITIES = 560;
 const CPU_TARGET_MS         = 6.0;  // 270-weight NN is expensive; allow rich worlds to run
 const CPU_PENALTY_W         = 0.05; // minimal penalty — complex worlds should not be selected against
 
@@ -70,16 +70,19 @@ parentPort!.on('message', ({ jobId, kind, laws, seed, evalSteps, gridSize, initi
 
   const t0      = Date.now();
   let peakPop   = 0;
+  let executedSteps = 0;
   const snapshots = [];
 
   for (let t = 0; t < steps; t++) {
     const snap = world.step();
     snapshots.push(snap);
+    executedSteps++;
     if (snap.population > peakPop) peakPop = snap.population;
+    if (snap.population === 0) break;
   }
 
   const wallMs    = Date.now() - t0;
-  const avgTickMs = wallMs / steps;
+  const avgTickMs = wallMs / Math.max(1, executedSteps);
 
   const history: WorldHistory = {
     snapshots,

@@ -26,7 +26,7 @@ const __dirname  = dirname(__filename);
 // ── State persistence ────────────────────────────────────────────────────────
 
 const STATE_PATH    = process.env.STATE_PATH ?? './state.json';
-const STATE_VERSION = 18; // +1: fusion (fusionThreshold, fusionRate) WorldLaws fields
+const STATE_VERSION = 19; // +1: faster turnover / display-density retune for live stability
 
 interface SavedState {
   version: number;
@@ -77,7 +77,7 @@ const EVAL_CONFIG = {
 
 const DISPLAY_CONFIG = {
   gridSize:        256,
-  initialEntities: 800,  // eval density = 50/(64²)=0.012; 800/(256²)=0.012 — match eval density so random genomes can find resources
+  initialEntities: 560,  // keep the display rich, but stop seeding the live world into instant dense soup
   minLifetimeTicks: 240,
   fieldFrameInterval: 6, // 30fps entities, 5fps field refresh
   fieldDownsample: 2,
@@ -91,8 +91,8 @@ const DISPLAY_PREFLIGHT_CONFIG = {
   minAliveFraction: 0.9,
   minFinalPopulation: 48,
   minMeanPopulation: 100,
-  maxMeanPopulation: 960,
-  maxAvgTickMs: 18,
+  maxMeanPopulation: 720,
+  maxAvgTickMs: 16,
   minFit: 0.42,
   promotionMargin: 0.05,
 };
@@ -769,7 +769,7 @@ export class SimulationController {
   constructor() {
     this.evalRng = new PRNG(Date.now());
 
-    const numWorkers = Math.max(1, cpus().length);
+    const numWorkers = Math.max(1, cpus().length - 1);
     this.workerPool  = new WorkerPool(numWorkers);
 
     this.loadState();
@@ -1041,7 +1041,7 @@ export class SimulationController {
       ...laws,
       disasterProbability: Math.min(laws.disasterProbability, 0.0025 + boundedTier * 0.0005),
       attackTransfer: Math.min(laws.attackTransfer, 0.55),
-      carryingCapacity: Math.max(laws.carryingCapacity, 0.08 + boundedTier * 0.006),
+      carryingCapacity: clampRange(laws.carryingCapacity, 0.06 + boundedTier * 0.003, 0.10 + boundedTier * 0.005),
       resourceRegenRate: Math.max(laws.resourceRegenRate, 0.018 + boundedTier * 0.003),
       offspringEnergy: Math.max(laws.offspringEnergy, 0.16 + boundedTier * 0.02),
       deathToxin: Math.min(laws.deathToxin, 0.55),
@@ -1049,6 +1049,8 @@ export class SimulationController {
       fusionThreshold: Math.max(6, laws.fusionThreshold),
       cellSizeMax: clampRange(laws.cellSizeMax, 1.35, 3.5),
       sizeMaintenance: Math.max(laws.sizeMaintenance, 0.0006),
+      agingRate: Math.max(laws.agingRate, 0.00045 + boundedTier * 0.00008),
+      maxAge: Math.min(laws.maxAge, 1200 - boundedTier * 90),
     };
   }
 
@@ -1181,7 +1183,7 @@ export class SimulationController {
     const displayPhysics = this.buildDisplayLaws(laws, safetyTier);
     const coldStart = !this.bestLaws && !this.showcaseLaws && this.generation === 0;
     const baseEntities = coldStart ? Math.round(DISPLAY_CONFIG.initialEntities * 0.72) : DISPLAY_CONFIG.initialEntities;
-    const initialEntities = Math.max(coldStart ? 360 : 480, baseEntities - safetyTier * 70);
+    const initialEntities = Math.max(coldStart ? 280 : 360, baseEntities - safetyTier * 70);
     this.displayWorld = new World(
       displayPhysics,
       { gridSize: DISPLAY_CONFIG.gridSize, steps: 999999, initialEntities },
@@ -1305,7 +1307,7 @@ export class SimulationController {
       );
     }
 
-    if (this.displayTick > 300 && snap.population === 0) {
+    if (this.displayTick > 60 && snap.population === 0) {
       this.displayExtinctions++;
       this.log(`Display world — extinction. Rotating showcase candidate (tier ${this.displayExtinctions}).`);
       this.startDisplayWorld(this.chooseDisplayCandidate('extinction'), true);

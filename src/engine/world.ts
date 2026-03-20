@@ -168,6 +168,8 @@ export class World {
   private readonly territoryStrength: Float32Array;
   private readonly visualColonyMass = new Uint8Array(MAX_ENTITIES);
   private readonly visualBodyRadius = new Uint8Array(MAX_ENTITIES);
+  private visualPreparedTick = -1;
+  private visualPreparedCount = -1;
 
   constructor(laws: WorldLaws, config: WorldConfig, seed: number) {
     this.laws   = laws;
@@ -595,9 +597,9 @@ export class World {
   private prepareVisualState(): void {
     const { entities } = this;
     const n = entities.count;
+    if (this.visualPreparedTick === this.tick && this.visualPreparedCount === n) return;
     this.rebuildColonyTopology(this.laws.kinThreshold ?? 0.8);
     this.rebuildBodyMap();
-    this.rebuildTerritoryMap();
     for (let i = 0; i < n; i++) {
       if (!entities.alive[i]) {
         this.visualColonyMass[i] = 0;
@@ -609,6 +611,8 @@ export class World {
       this.visualColonyMass[i] = Math.min(255, members);
       this.visualBodyRadius[i] = Math.min(255, this.getBodyRadius(root));
     }
+    this.visualPreparedTick = this.tick;
+    this.visualPreparedCount = n;
   }
 
   private getColonyMemberCount(i: number): number {
