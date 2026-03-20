@@ -61,6 +61,7 @@ export interface WorldSnapshot {
   largestColony: number;
   colonyBirths: number;
   poisonCoverage: number;        // fraction of cells with poison > 0.1
+  territoryCoverage: number;     // fraction of cells controlled by macro-body territory
   harvestEfficiencyRatio: number; // M5: Q4 eat/age ÷ Q1 eat/age. >1.2 = lifetime foraging learning
 }
 
@@ -109,11 +110,13 @@ export class World {
   readonly gridH: number;
   readonly resources: Float32Array;
   readonly resourceCapacity: Float32Array;
+  readonly scaleHabitat: Float32Array; // [-1,1] : negative favors micro life, positive favors macro life
   readonly signals: Float32Array; // [H * W * channels]
   readonly poison: Float32Array;  // [H * W] toxin concentration 0–1
   readonly glyphs: Float32Array;  // [H * W * GLYPH_CHANNELS] stigmergic memory
   readonly entityMap: Int16Array; // -1 or entity index at each cell
   readonly bodyMap: Int16Array;   // -1 or root entity index occupying this soft body footprint cell
+  readonly territoryMap: Int16Array; // -1 or root entity index controlling this territorial cell
   readonly entities: EntityPool;
 
   tick: number = 0;
@@ -148,6 +151,8 @@ export class World {
   // Pre-allocated directional perception buffers (4 cardinal dirs: 0=N,1=E,2=S,3=W)
   private readonly dirRes    = new Float64Array(4);
   private readonly dirEnt    = new Float64Array(4);
+  private readonly dirKin    = new Float64Array(4);
+  private readonly dirThreat = new Float64Array(4);
   private readonly dirGlyph  = new Float64Array(4);
   private readonly dirSignal = new Float64Array(4);
   private readonly dirCount  = new Int32Array(4);
@@ -160,6 +165,7 @@ export class World {
   private readonly colonyEnergy = new Float32Array(MAX_ENTITIES);
   private readonly colonyHidden = new Float32Array(MAX_ENTITIES * NN_HIDDEN);
   private readonly bodyStrength: Float32Array;
+  private readonly territoryStrength: Float32Array;
   private readonly visualColonyMass = new Uint8Array(MAX_ENTITIES);
   private readonly visualBodyRadius = new Uint8Array(MAX_ENTITIES);
 
@@ -173,15 +179,19 @@ export class World {
     const cellCount = this.gridW * this.gridH;
     this.resources        = new Float32Array(cellCount);
     this.resourceCapacity = new Float32Array(cellCount);
+    this.scaleHabitat     = new Float32Array(cellCount);
     this.signals          = new Float32Array(cellCount * laws.signalChannels);
     this.poison           = new Float32Array(cellCount);
     this.glyphs           = new Float32Array(cellCount * GLYPH_CHANNELS);
     this.entityMap        = new Int16Array(cellCount).fill(-1);
     this.bodyMap          = new Int16Array(cellCount).fill(-1);
+    this.territoryMap     = new Int16Array(cellCount).fill(-1);
     this.bodyStrength     = new Float32Array(cellCount);
+    this.territoryStrength = new Float32Array(cellCount);
     this.entities         = new EntityPool();
 
     this.initResources();
+    this.initScaleHabitat();
     this.spawnInitialEntities();
   }
 
@@ -229,6 +239,48 @@ export class World {
       const y = rng.int(0, gridH - 1);
       const idx = entities.spawn(x, y, 0.5, null, -1, rng);
       if (idx >= 0) entityMap[y * gridW + x] = idx;
+    }
+  }
+
+  private initScaleHabitat(): void {
+    const { gridW, gridH, rng, scaleHabitat } = this;
+    const macroSeeds = Array.from({ length: 4 }, () => ({
+      x: rng.int(0, gridW - 1),
+      y: rng.int(0, gridH - 1),
+      amp: rng.uniform(0.7, 1.15),
+      radius: rng.uniform(gridW * 0.10, gridW * 0.18),
+    }));
+    const microSeeds = Array.from({ length: 5 }, () => ({
+      x: rng.int(0, gridW - 1),
+      y: rng.int(0, gridH - 1),
+      amp: rng.uniform(0.6, 1.0),
+      radius: rng.uniform(gridW * 0.08, gridW * 0.14),
+    }));
+    const wavePhaseA = rng.uniform(0, Math.PI * 2);
+    const wavePhaseB = rng.uniform(0, Math.PI * 2);
+
+    for (let y = 0; y < gridH; y++) {
+      for (let x = 0; x < gridW; x++) {
+        let macro = 0;
+        let micro = 0;
+        for (const seed of macroSeeds) {
+          const dx = Math.min(Math.abs(x - seed.x), gridW - Math.abs(x - seed.x));
+          const dy = Math.min(Math.abs(y - seed.y), gridH - Math.abs(y - seed.y));
+          const dist2 = dx * dx + dy * dy;
+          macro += seed.amp * Math.exp(-dist2 / (seed.radius * seed.radius));
+        }
+        for (const seed of microSeeds) {
+          const dx = Math.min(Math.abs(x - seed.x), gridW - Math.abs(x - seed.x));
+          const dy = Math.min(Math.abs(y - seed.y), gridH - Math.abs(y - seed.y));
+          const dist2 = dx * dx + dy * dy;
+          micro += seed.amp * Math.exp(-dist2 / (seed.radius * seed.radius));
+        }
+        const wave =
+          Math.sin((x / gridW) * Math.PI * 2.4 + wavePhaseA) * 0.18 +
+          Math.cos((y / gridH) * Math.PI * 3.1 + wavePhaseB) * 0.14;
+        const habitat = Math.max(-1, Math.min(1, (macro - micro) * 0.82 + wave));
+        scaleHabitat[y * gridW + x] = habitat;
+      }
     }
   }
 
@@ -545,6 +597,7 @@ export class World {
     const n = entities.count;
     this.rebuildColonyTopology(this.laws.kinThreshold ?? 0.8);
     this.rebuildBodyMap();
+    this.rebuildTerritoryMap();
     for (let i = 0; i < n; i++) {
       if (!entities.alive[i]) {
         this.visualColonyMass[i] = 0;
@@ -563,11 +616,22 @@ export class World {
     return root >= 0 && this.colonyMembers[root] > 0 ? this.colonyMembers[root] : 1;
   }
 
+  private getScaleHabitatAt(x: number, y: number): number {
+    return this.scaleHabitat[y * this.gridW + x];
+  }
+
+  private getEntityScaleHabitat(i: number): number {
+    return this.getScaleHabitatAt(this.entities.x[i], this.entities.y[i]);
+  }
+
   private getEffectiveEnergyCap(i: number): number {
     const baseCap = this.laws.energyCap ?? 1.5;
     const sizeBonus = Math.min(1.2, Math.max(0, this.entities.size[i] - 1) * 0.55);
     const colonyBonus = Math.min(0.35, Math.max(0, this.getColonyMemberCount(i) - 1) * 0.05);
-    return baseCap * (1 + sizeBonus + colonyBonus);
+    const habitat = this.getEntityScaleHabitat(i);
+    const largeAffinity = Math.max(0, habitat) * Math.max(0, this.entities.size[i] - 1.3) * 0.10;
+    const microAffinity = Math.max(0, -habitat) * Math.max(0, 1.2 - this.entities.size[i]) * 0.12;
+    return baseCap * (1 + sizeBonus + colonyBonus + largeAffinity + microAffinity);
   }
 
   private getEffectivePerceptionRadius(i: number): number {
@@ -587,7 +651,11 @@ export class World {
     const base = this.laws.reproductionCost ?? 0.6;
     const sizePenalty = Math.max(0, this.entities.size[i] - 1) * 0.75;
     const colonyPenalty = Math.min(0.45, Math.max(0, this.getColonyMemberCount(i) - 1) * 0.06);
-    return base * (1 + sizePenalty + colonyPenalty);
+    const habitat = this.getEntityScaleHabitat(i);
+    const size = this.entities.size[i];
+    const microRelief = Math.max(0, -habitat) * Math.max(0, 1.25 - size) * 0.22;
+    const macroRelief = Math.max(0, habitat) * Math.max(0, size - 1.45) * 0.10;
+    return base * Math.max(0.55, 1 + sizePenalty + colonyPenalty - microRelief - macroRelief);
   }
 
   private getBodyRoot(i: number): number {
@@ -609,6 +677,19 @@ export class World {
     const fusedBias = members > 1 ? 0.35 + Math.min(1.1, (members - 1) * 0.24) : 0;
     const sizeBias = Math.max(0, size - 1.35) * 1.45;
     return Math.min(3, Math.max(0, Math.floor(sizeBias + fusedBias)));
+  }
+
+  private getTerritoryRadius(i: number): number {
+    const root = this.getBodyRoot(i);
+    if (root !== i && this.colonyMembers[root] > 1) return 0;
+
+    const bodyRadius = this.getBodyRadius(root);
+    const members = Math.max(1, this.colonyMembers[root] || 1);
+    if (bodyRadius <= 0 && this.entities.size[root] < 1.8 && members < 4) return 0;
+
+    const sizeBonus = Math.max(0, Math.floor(this.entities.size[root] - 1.9));
+    const colonyBonus = members >= 4 ? 1 + Math.min(2, Math.floor((members - 4) / 3)) : 0;
+    return Math.min(5, Math.max(bodyRadius, bodyRadius + sizeBonus + colonyBonus));
   }
 
   private rebuildBodyMap(): void {
@@ -646,6 +727,47 @@ export class World {
     }
   }
 
+  private rebuildTerritoryMap(): void {
+    const { entities, territoryMap, territoryStrength, gridW, gridH } = this;
+    territoryMap.fill(-1);
+    territoryStrength.fill(0);
+
+    for (let i = 0; i < entities.count; i++) {
+      if (!entities.alive[i]) continue;
+      if (this.getBodyRoot(i) !== i) continue;
+
+      const radius = this.getTerritoryRadius(i);
+      if (radius <= 0) continue;
+
+      const members = Math.max(1, this.colonyMembers[i] || 1);
+      const ox = entities.x[i];
+      const oy = entities.y[i];
+      const controlBase =
+        0.82
+        + entities.size[i] * 0.20
+        + Math.min(0.9, Math.max(0, members - 1) * 0.10)
+        + Math.max(0, this.getEntityScaleHabitat(i)) * 0.18;
+
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const dist2 = dx * dx + dy * dy;
+          if (dist2 > radius * radius + 1) continue;
+
+          const nx = ((ox + dx) % gridW + gridW) % gridW;
+          const ny = ((oy + dy) % gridH + gridH) % gridH;
+          const cell = ny * gridW + nx;
+          const dist = Math.sqrt(dist2);
+          const falloff = Math.max(0, 1 - dist / (radius + 0.55));
+          const strength = controlBase * (0.42 + falloff * 0.78);
+          if (strength > territoryStrength[cell]) {
+            territoryStrength[cell] = strength;
+            territoryMap[cell] = i;
+          }
+        }
+      }
+    }
+  }
+
   private footprintAllowsEntity(i: number, cx: number, cy: number): boolean {
     const { bodyMap, gridW, gridH } = this;
     const radius = this.getBodyRadius(i);
@@ -663,6 +785,167 @@ export class World {
       if (owner >= 0 && !this.isSameBodyAlliance(i, owner)) return false;
     }
     return true;
+  }
+
+  private moveActionForDir(dir: number): ActionType {
+    switch (dir) {
+      case 0: return ActionType.MOVE_N;
+      case 1: return ActionType.MOVE_E;
+      case 2: return ActionType.MOVE_S;
+      case 3: return ActionType.MOVE_W;
+      default: return ActionType.IDLE;
+    }
+  }
+
+  private getDirectionalPeak(values: Float64Array): { dir: number; value: number } {
+    let bestDir = 0;
+    let bestValue = values[0];
+    for (let d = 1; d < 4; d++) {
+      if (values[d] > bestValue) {
+        bestValue = values[d];
+        bestDir = d;
+      }
+    }
+    return { dir: bestDir, value: bestValue };
+  }
+
+  private sampleLocalCommunication(x: number, y: number, radius: number): { signal: number; glyph: number; poison: number } {
+    const { gridW, gridH, laws } = this;
+    let signal = 0;
+    let glyph = 0;
+    let poison = 0;
+    let count = 0;
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (dx * dx + dy * dy > radius * radius + 1) continue;
+        const nx = ((x + dx) % gridW + gridW) % gridW;
+        const ny = ((y + dy) % gridH + gridH) % gridH;
+        const cell = ny * gridW + nx;
+        for (let c = 0; c < laws.signalChannels; c++) {
+          signal += this.signals[cell * laws.signalChannels + c];
+        }
+        const gBase = cell * GLYPH_CHANNELS;
+        let gMag = 0;
+        for (let c = 0; c < GLYPH_CHANNELS; c++) {
+          const g = this.glyphs[gBase + c];
+          gMag += g * g;
+        }
+        glyph += Math.sqrt(gMag);
+        poison += this.poison[cell];
+        count++;
+      }
+    }
+
+    if (count <= 0) return { signal: 0, glyph: 0, poison: 0 };
+    const signalNorm = laws.signalChannels > 0 ? signal / (count * laws.signalChannels) : 0;
+    return {
+      signal: Math.min(1, signalNorm),
+      glyph: Math.min(1, glyph / count),
+      poison: Math.min(1, poison / count),
+    };
+  }
+
+  private measureFusionContext(root: number, kinThresh: number): { coordination: number; stress: number; habitat: number } {
+    const { entities, entityMap, gridW, gridH } = this;
+    const members = Math.max(1, this.colonyMembers[root] || 1);
+    const radius = Math.max(2, this.getTerritoryRadius(root));
+    const ox = entities.x[root];
+    const oy = entities.y[root];
+    const comm = this.sampleLocalCommunication(ox, oy, Math.min(2, radius));
+
+    let outsiders = 0;
+    let scanned = 0;
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        if (dx * dx + dy * dy > radius * radius + 1) continue;
+        const nx = ((ox + dx) % gridW + gridW) % gridW;
+        const ny = ((oy + dy) % gridH + gridH) % gridH;
+        const other = entityMap[ny * gridW + nx];
+        if (other >= 0 && entities.alive[other] && this.colonyRoot[other] !== root && this.genomeSimilarity(root, other) < kinThresh) {
+          outsiders++;
+        }
+        scanned++;
+      }
+    }
+
+    const reserveNorm = this.getColonyReserve(root) / Math.max(0.001, (this.laws.energyCap ?? 1.5) * (0.75 + members * 0.4));
+    const outsiderPressure = scanned > 0 ? outsiders / scanned : 0;
+    const coordination = Math.min(1, comm.signal * 0.65 + comm.glyph * 0.35 + reserveNorm * 0.18);
+    const stress = Math.min(1, comm.poison * 0.55 + outsiderPressure * 2.2 + Math.max(0, -this.getEntityScaleHabitat(root)) * 0.10);
+    const habitat = Math.max(0, this.getEntityScaleHabitat(root));
+    return { coordination, stress, habitat };
+  }
+
+  private applyColonyRootDirective(
+    i: number,
+    localAction: ActionType,
+    kinCount: number,
+    threatCount: number,
+    localSignal: number,
+    dirRes: Float64Array,
+    dirGlyph: Float64Array,
+    dirSignal: Float64Array,
+    dirThreat: Float64Array,
+  ): ActionType {
+    if (this.colonyRoot[i] !== i) return localAction;
+    const members = this.colonyMembers[i];
+    if (members <= 1) return localAction;
+
+    const reserveNorm = this.getColonyReserve(i) / Math.max(0.001, (this.laws.energyCap ?? 1.5) * (0.75 + members * 0.4));
+    const bodyRadius = this.getBodyRadius(i);
+    const territoryRadius = this.getTerritoryRadius(i);
+    const energyNorm = Math.min(1.4, this.entities.energy[i] / this.getEffectiveEnergyCap(i));
+    const threatPressure = threatCount / Math.max(1, kinCount + threatCount);
+    const habitat = this.getEntityScaleHabitat(i);
+    const macroScale =
+      Math.min(1, Math.max(0, members - 1) / Math.max(3, (this.laws.fusionThreshold ?? 6) - 1)) * 0.55 +
+      Math.min(1, Math.max(0, this.entities.size[i] - 1.4) / 1.8) * 0.45;
+    const commandStrength = Math.min(0.92, 0.30 + macroScale * 0.32 + reserveNorm * 0.14 + Math.max(0, habitat) * 0.10);
+
+    const bestThreat = this.getDirectionalPeak(dirThreat);
+    const bestFood = this.getDirectionalPeak(dirRes);
+    const bestComm = this.getDirectionalPeak(dirSignal);
+    const bestTrail = this.getDirectionalPeak(dirGlyph);
+    const huntDir = bestThreat.dir;
+    const forageDir = (dirRes[bestFood.dir] + dirGlyph[bestFood.dir] * 0.55) >= (dirRes[bestTrail.dir] + dirGlyph[bestTrail.dir] * 0.55)
+      ? bestFood.dir
+      : bestTrail.dir;
+
+    const embattled = threatPressure > 0.24 || bestThreat.value > 0.08;
+    const hungry = reserveNorm < 0.24 || energyNorm < 0.56;
+    const fertile = reserveNorm > 0.42 && energyNorm > 0.72 && members >= Math.max(4, (this.laws.fusionThreshold ?? 6) - 1);
+    const territorial = territoryRadius > bodyRadius && macroScale > 0.34;
+
+    if (embattled && bestThreat.value > 0.04) {
+      if (localAction === ActionType.ATTACK || this.rng.random() < commandStrength * 0.65) {
+        return ActionType.ATTACK;
+      }
+      if (this.rng.random() < commandStrength * 0.55) {
+        return this.moveActionForDir(huntDir);
+      }
+    }
+
+    if (hungry) {
+      const localRich = this.resources[this.entities.y[i] * this.gridW + this.entities.x[i]] > 0.16;
+      if (localRich && this.rng.random() < commandStrength * 0.55) return ActionType.EAT;
+      if ((bestFood.value > 0.08 || bestTrail.value > 0.05) && this.rng.random() < commandStrength * 0.60) {
+        return this.moveActionForDir(forageDir);
+      }
+    }
+
+    if (territorial && !embattled && reserveNorm > 0.26) {
+      if (bestComm.value > 0.06 && this.rng.random() < commandStrength * 0.36) return ActionType.SIGNAL;
+      if ((bestTrail.value > 0.04 || localSignal < 0.10) && this.rng.random() < commandStrength * 0.34) return ActionType.DEPOSIT;
+      if (this.rng.random() < commandStrength * 0.20) return this.moveActionForDir(bestComm.dir);
+    }
+
+    if (fertile) {
+      if (this.rng.random() < commandStrength * 0.38) return ActionType.REPRODUCE;
+      if (this.rng.random() < commandStrength * 0.18) return ActionType.SIGNAL;
+    }
+
+    return localAction;
   }
 
   private getColonyReserve(root: number): number {
@@ -803,12 +1086,24 @@ export class World {
       if (meanEnergy < energyGate) continue;
       if (entities.size[root] < sizeGate && members < fusThresh + 2) continue;
 
+      const context = this.measureFusionContext(root, this.laws.kinThreshold ?? 0.8);
+      const reserveNorm = this.getColonyReserve(root) / Math.max(0.001, cap * (0.85 + members * 0.55));
+      const readyBySurplus = reserveNorm > 0.26 && context.coordination > 0.06;
+      const readyByStress = context.stress > 0.12 && context.coordination > 0.04;
+      if (!readyBySurplus && !readyByStress) continue;
+
       // Probability scales with maturity and colony surplus, but stays tightly bounded.
       const fusionChance = Math.min(
-        0.02,
+        0.024,
         fusRate
           * Math.min(3, members / Math.max(1, fusThresh))
           * Math.min(1.35, meanEnergy / Math.max(0.001, cap * 0.75)),
+      ) * (
+        0.52
+        + reserveNorm * 0.32
+        + context.coordination * 0.44
+        + context.stress * 0.22
+        + context.habitat * 0.10
       );
       if (this.rng.random() >= fusionChance) continue;
 
@@ -1011,6 +1306,7 @@ export class World {
     this.syncColonies(kinThresh);
     this.executeFusion();
     this.rebuildBodyMap();
+    this.rebuildTerritoryMap();
 
     const leaderOrder = this.leaderOrder;
     let leaderWrite = 0;
@@ -1054,8 +1350,8 @@ export class World {
       const coopBonus   = laws.cooperationBonus ?? 0;
       const perceptionRadius = this.getEffectivePerceptionRadius(i);
       const cx = entities.x[i], cy = entities.y[i];
-      const { dirRes, dirEnt, dirGlyph, dirSignal, dirCount } = this;
-      dirRes.fill(0); dirEnt.fill(0); dirGlyph.fill(0); dirSignal.fill(0); dirCount.fill(0);
+      const { dirRes, dirEnt, dirKin, dirThreat, dirGlyph, dirSignal, dirCount } = this;
+      dirRes.fill(0); dirEnt.fill(0); dirKin.fill(0); dirThreat.fill(0); dirGlyph.fill(0); dirSignal.fill(0); dirCount.fill(0);
       let nCount = 0;
       let kinCount = 0;
       let localSignal = 0;
@@ -1082,6 +1378,9 @@ export class World {
             nCount++;
             if (this.entities.alive[neighbor] && this.genomeSimilarity(i, neighbor) >= kinThresh) {
               kinCount++;
+              dirKin[dir]++;
+            } else if (this.entities.alive[neighbor]) {
+              dirThreat[dir]++;
             }
           }
           let signal = 0;
@@ -1104,6 +1403,8 @@ export class World {
         if (dirCount[d] > 0) {
           dirRes[d]   /= dirCount[d];
           dirEnt[d]   /= dirCount[d];
+          dirKin[d]   /= dirCount[d];
+          dirThreat[d] /= dirCount[d];
           dirSignal[d] = Math.min(1, dirSignal[d] / dirCount[d]);
           dirGlyph[d]  = Math.min(1, dirGlyph[d] / dirCount[d]);
         }
@@ -1133,9 +1434,12 @@ export class World {
       const hostileCrowding = Math.min(1, Math.max(0, (nCount - kinCount) / Math.max(1, crowdThresh)));
       const colonyMembers = this.getColonyMemberCount(i);
       const colonyMass = Math.min(1, Math.max(0, colonyMembers - 1) / 4);
+      const habitat = this.getScaleHabitatAt(cx, cy);
+      const macroHabitat = Math.max(0, habitat);
+      const microHabitat = Math.max(0, -habitat);
       const sizeCeiling = Math.min(
         (this.laws.cellSizeMax ?? 2.8) * 1.55,
-        (this.laws.cellSizeMax ?? 2.8) + colonyMass * 1.15,
+        (this.laws.cellSizeMax ?? 2.8) + colonyMass * (0.95 + macroHabitat * 0.38),
       );
       const ageLift = Math.min(0.20, entities.age[i] / Math.max(240, laws.maxAge) * 0.30);
       const targetSize = Math.max(
@@ -1147,21 +1451,37 @@ export class World {
             + this.resources[cy * gridW + cx] * 0.16
             + kinSupport * 0.24
             + colonyMass * 0.85
+            + macroHabitat * (0.12 + colonyMass * 0.24)
             + ageLift
+            - microHabitat * (0.10 + colonyMass * 0.18)
             - hostileCrowding * 0.30,
         ),
       );
       entities.size[i] += (targetSize - entities.size[i]) * 0.10;
       const excessSize = Math.max(0, entities.size[i] - 1);
       const sizeUpkeep =
-        excessSize * (this.laws.sizeMaintenance * 1.45 + colonyMass * 0.0010)
+        excessSize * (this.laws.sizeMaintenance * (1.45 + microHabitat * 0.55 - macroHabitat * 0.20) + colonyMass * 0.0010)
         + excessSize * excessSize * 0.0018
+        + excessSize * microHabitat * 0.0024
         + hostileCrowding * excessSize * 0.0040;
       entities.energy[i] -= sizeUpkeep;
       if (entities.energy[i] <= 0) { this.killEntity(i); continue; }
 
       // Decide action from directional perception
-      const chosenAction = this.decideAction(i, localSignal, dirRes, dirEnt, dirGlyph, dirSignal);
+      let chosenAction = this.decideAction(i, localSignal, dirRes, dirEnt, dirGlyph, dirSignal);
+      if (this.colonyRoot[i] === i && colonyMembers > 1) {
+        chosenAction = this.applyColonyRootDirective(
+          i,
+          chosenAction,
+          kinCount,
+          Math.max(0, nCount - kinCount),
+          localSignal,
+          dirRes,
+          dirGlyph,
+          dirSignal,
+          dirThreat,
+        );
+      }
       const action = this.alignWithColonyCommand(i, chosenAction, kinCount, Math.max(0, nCount - kinCount));
       entities.action[i] = action;
 
@@ -1304,24 +1624,36 @@ export class World {
   }
 
   private executeMove(i: number, dx: number, dy: number): void {
-    const { entities, laws, gridW, gridH, entityMap, bodyMap } = this;
+    const { entities, laws, gridW, gridH, entityMap, bodyMap, territoryMap, territoryStrength } = this;
     const speed = laws.moveSpeed ?? 1;
 
     const ox = entities.x[i];
     const oy = entities.y[i];
     let finalX = ox, finalY = oy;
+    let territoryPenalty = 0;
     for (let s = 1; s <= speed; s++) {
       const nx = ((ox + dx * s) % gridW + gridW) % gridW;
       const ny = ((oy + dy * s) % gridH + gridH) % gridH;
       if (entityMap[ny * gridW + nx] >= 0) break;
       const footprintOwner = bodyMap[ny * gridW + nx];
       if (footprintOwner >= 0 && !this.isSameBodyAlliance(i, footprintOwner)) break;
+      const territoryOwner = territoryMap[ny * gridW + nx];
+      if (territoryOwner >= 0 && !this.isSameBodyAlliance(i, territoryOwner)) {
+        const ownPressure =
+          0.72
+          + entities.size[i] * 0.28
+          + Math.max(0, this.getColonyMemberCount(i) - 1) * 0.10
+          + Math.max(0, this.getEntityScaleHabitat(i)) * 0.10;
+        const enemyPressure = territoryStrength[ny * gridW + nx];
+        if (enemyPressure > ownPressure * 1.05) break;
+        territoryPenalty += Math.max(0, enemyPressure - ownPressure * 0.55) * 0.012;
+      }
       finalX = nx;
       finalY = ny;
     }
 
     const sizeFactor = 0.72 + Math.pow(Math.max(0.75, entities.size[i]), 1.2) * 0.34;
-    const moveCost = laws.moveCost * speed * sizeFactor;
+    const moveCost = laws.moveCost * speed * sizeFactor + territoryPenalty;
 
     if (finalX !== ox || finalY !== oy) {
       if (!this.colonyMoveMaintainsContact(i, finalX, finalY)) {
@@ -1343,21 +1675,25 @@ export class World {
   }
 
   private executeEat(i: number): void {
-    const { entities, laws, resources, gridW, gridH, bodyMap } = this;
+    const { entities, laws, resources, gridW, gridH, bodyMap, territoryMap } = this;
     const ox = entities.x[i];
     const oy = entities.y[i];
     const bodyRadius = this.getBodyRadius(i);
+    const territoryRadius = this.getTerritoryRadius(i);
+    const forageRadius = Math.max(bodyRadius, territoryRadius > 0 ? territoryRadius - 1 : 0);
     let cellIdx = oy * gridW + ox;
     let bestResource = resources[cellIdx];
-    if (bodyRadius > 0) {
-      for (let dy = -bodyRadius; dy <= bodyRadius; dy++) {
-        for (let dx = -bodyRadius; dx <= bodyRadius; dx++) {
-          if (dx * dx + dy * dy > bodyRadius * bodyRadius + 1) continue;
+    if (forageRadius > 0) {
+      for (let dy = -forageRadius; dy <= forageRadius; dy++) {
+        for (let dx = -forageRadius; dx <= forageRadius; dx++) {
+          if (dx * dx + dy * dy > forageRadius * forageRadius + 1) continue;
           const nx = ((ox + dx) % gridW + gridW) % gridW;
           const ny = ((oy + dy) % gridH + gridH) % gridH;
           const candidate = ny * gridW + nx;
           const owner = bodyMap[candidate];
           if (owner >= 0 && !this.isSameBodyAlliance(i, owner)) continue;
+          const territoryOwner = territoryMap[candidate];
+          if (territoryOwner >= 0 && !this.isSameBodyAlliance(i, territoryOwner)) continue;
           if (resources[candidate] > bestResource) {
             bestResource = resources[candidate];
             cellIdx = candidate;
@@ -1369,7 +1705,8 @@ export class World {
     const harvestMul =
       1
       + Math.min(0.28, Math.max(0, entities.size[i] - 1) * 0.18)
-      + Math.min(0.12, bodyRadius * 0.04);
+      + Math.min(0.12, forageRadius * 0.04)
+      + Math.max(0, this.getEntityScaleHabitat(i)) * Math.max(0, entities.size[i] - 1.35) * 0.05;
     const gain      = Math.min(resources[cellIdx], laws.eatGain * harvestMul);
     entities.energy[i]  += gain;
     resources[cellIdx]  -= gain;
@@ -1378,7 +1715,7 @@ export class World {
   }
 
   private executeReproduce(i: number): void {
-    const { entities, laws, rng, gridW, gridH, entityMap, bodyMap } = this;
+    const { entities, laws, rng, gridW, gridH, entityMap, bodyMap, territoryMap } = this;
     const reproductionCost = this.getEffectiveReproductionCost(i);
 
     if (entities.age[i] < 150) return;
@@ -1391,7 +1728,8 @@ export class World {
     const oy = entities.y[i];
 
     const bodyRadius = this.getBodyRadius(i);
-    const spawnDist = Math.max(laws.spawnDistance ?? 1, bodyRadius + 1);
+    const territoryRadius = this.getTerritoryRadius(i);
+    const spawnDist = Math.max(laws.spawnDistance ?? 1, bodyRadius + 1, territoryRadius);
     for (let attempt = 0; attempt < 8; attempt++) {
       const dx = rng.int(-spawnDist, spawnDist);
       const dy = rng.int(-spawnDist, spawnDist);
@@ -1402,7 +1740,7 @@ export class World {
       const ny   = ((oy + dy) % gridH + gridH) % gridH;
       const cell = ny * gridW + nx;
 
-      if (entityMap[cell] < 0 && bodyMap[cell] < 0) {
+      if (entityMap[cell] < 0 && bodyMap[cell] < 0 && (territoryMap[cell] < 0 || this.isSameBodyAlliance(i, territoryMap[cell]))) {
         // Sexual reproduction: find a nearby mate
         let mateGenome: Float32Array | null = null;
         if (laws.sexualReproduction) {
@@ -1456,7 +1794,7 @@ export class World {
     for (let j = 0; j < NN_HIDDEN; j++) sigColSum += genome[NN_W3_OFFSET + j * NN_OUTPUTS + 7];
     const strength = 1 / (1 + Math.exp(-sigColSum * 0.3));
 
-    const range = laws.signalRange;
+    const range = Math.min(10, laws.signalRange + Math.min(2, this.getTerritoryRadius(i)));
     const ex    = entities.x[i];
     const ey    = entities.y[i];
 
@@ -1480,7 +1818,7 @@ export class World {
     const ox = entities.x[i];
     const oy = entities.y[i];
 
-    const atkRange = this.getEffectiveAttackRange(i) + this.getBodyRadius(i);
+    const atkRange = this.getEffectiveAttackRange(i) + this.getBodyRadius(i) + Math.min(2, this.getTerritoryRadius(i));
     let minDist = 99;
     let bestTarget = -1;
     for (let dy2 = -atkRange; dy2 <= atkRange; dy2++) {
@@ -1923,6 +2261,11 @@ export class World {
       if (this.poison[i] > 0.1) poisonedCells++;
     }
 
+    let territoryCells = 0;
+    for (let i = 0; i < this.territoryStrength.length; i++) {
+      if (this.territoryStrength[i] > 0.8) territoryCells++;
+    }
+
     return {
       tick: this.tick,
       population: n,
@@ -1948,6 +2291,7 @@ export class World {
       largestColony: this.tickLargestColony,
       colonyBirths: this.tickColonyBirths,
       poisonCoverage: poisonedCells / this.poison.length,
+      territoryCoverage: territoryCells / this.territoryStrength.length,
       harvestEfficiencyRatio: (this.tickQ1Count > 0 && this.tickQ4Count > 0)
         ? (this.tickQ4EatSum / this.tickQ4Count) / (this.tickQ1EatSum / this.tickQ1Count)
         : 1.0,

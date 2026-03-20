@@ -253,6 +253,9 @@ function scoreSpatialStructure(snaps: WorldSnapshot[]): number {
   const poisonCov = snaps.map(s => s.poisonCoverage);
   const poisonVar = sampleVariance(poisonCov);
   const poisonPresent = mean(poisonCov) > 0.01 ? 0.3 : 0;
+  const territoryCov = snaps.map(s => s.territoryCoverage);
+  const territoryVar = sampleVariance(territoryCov);
+  const territoryBand = bandScore(mean(territoryCov), 0.10, 0.10);
   const sizeMeans = snaps.map(s => s.meanSize);
   const sizeVar = sampleVariance(sizeMeans);
   const maxMacro = Math.max(...snaps.map(s => s.maxSize));
@@ -270,6 +273,8 @@ function scoreSpatialStructure(snaps: WorldSnapshot[]): number {
     (birthVar + deathVar) * 30
     + poisonVar * 10
     + poisonPresent
+    + territoryBand * 0.18
+    + territoryVar * 3.5
     + sizeVar * 5
     + macroRarity * 0.25
     + macroPresence * 0.16

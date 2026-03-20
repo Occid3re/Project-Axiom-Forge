@@ -1112,6 +1112,10 @@ export class SimulationController {
     pushUnique(this.displaySourceLaws);
     pushUnique(this.showcaseLaws);
     pushUnique(this.bestLaws);
+    for (const laws of this.population) {
+      if (candidates.length >= DISPLAY_PREFLIGHT_CONFIG.maxCandidates) break;
+      pushUnique(laws);
+    }
     return candidates;
   }
 
@@ -1175,7 +1179,9 @@ export class SimulationController {
     this.displaySeed  = this.evalRng.int(0, 0x7fffffff);
     const safetyTier = Math.min(4, this.displayExtinctions);
     const displayPhysics = this.buildDisplayLaws(laws, safetyTier);
-    const initialEntities = Math.max(480, DISPLAY_CONFIG.initialEntities - safetyTier * 70);
+    const coldStart = !this.bestLaws && !this.showcaseLaws && this.generation === 0;
+    const baseEntities = coldStart ? Math.round(DISPLAY_CONFIG.initialEntities * 0.72) : DISPLAY_CONFIG.initialEntities;
+    const initialEntities = Math.max(coldStart ? 360 : 480, baseEntities - safetyTier * 70);
     this.displayWorld = new World(
       displayPhysics,
       { gridSize: DISPLAY_CONFIG.gridSize, steps: 999999, initialEntities },
@@ -1424,6 +1430,8 @@ export class SimulationController {
     this.bestLaws              = null;
     this.showcaseScore         = 0;
     this.showcaseLaws          = null;
+    this.displaySourceLaws     = null;
+    this.displayAssessments    = new WeakMap();
     this.population            = [];
     this.generationSummaries   = [];
     this.lastImprovementGen    = 0;
