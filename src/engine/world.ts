@@ -66,6 +66,8 @@ export interface WorldSnapshot {
 }
 
 const COLONY_RESERVE_SLOT = NN_HIDDEN;
+const COLONY_CORTEX_DIR_SLOT = NN_HIDDEN + 1;
+const COLONY_CORTEX_URGE_SLOT = NN_HIDDEN + 2;
 
 export interface WorldHistory {
   snapshots: WorldSnapshot[];
@@ -548,7 +550,17 @@ export class World {
       const members = this.colonyMembers[i];
       const memOff = i * MAX_MEMORY_SIZE + COLONY_RESERVE_SLOT;
       if (members <= 1) {
-        entities.memory[memOff] *= 0.85;
+        if (this.isMacroBodyController(i)) {
+          const previousReserve = entities.memory[memOff] || 0;
+          const macroSurplus = Math.max(0, entities.energy[i] - (this.laws.energyCap ?? 1.5) * 0.78);
+          this.setColonyReserve(i, previousReserve * 0.965 + macroSurplus * 0.08);
+          const cortex = this.getColonyCortex(i);
+          this.setColonyCortex(i, cortex.dir, cortex.urge * 0.965);
+        } else {
+          entities.memory[memOff] *= 0.85;
+          const cortex = this.getColonyCortex(i);
+          this.setColonyCortex(i, cortex.dir, cortex.urge * 0.72);
+        }
         continue;
       }
       this.tickFusedMembers += members;
@@ -558,6 +570,8 @@ export class World {
       const surplus = Math.max(0, this.colonyEnergy[i] - members * (this.laws.energyCap ?? 1.5) * 0.56);
       const reserve = previousReserve * 0.93 + surplus * 0.09;
       this.setColonyReserve(i, reserve);
+      const cortex = this.getColonyCortex(i);
+      this.setColonyCortex(i, cortex.dir, cortex.urge * 0.985);
     }
 
     // Fused colonies equalize energy and partially synchronize recurrent memory.
@@ -894,11 +908,12 @@ export class World {
   ): ActionType {
     if (this.colonyRoot[i] !== i) return localAction;
     const members = this.colonyMembers[i];
-    if (members <= 1) return localAction;
-
-    const reserveNorm = this.getColonyReserve(i) / Math.max(0.001, (this.laws.energyCap ?? 1.5) * (0.75 + members * 0.4));
     const bodyRadius = this.getBodyRadius(i);
     const territoryRadius = this.getTerritoryRadius(i);
+    const macroBody = members > 1 || bodyRadius > 0 || this.entities.size[i] >= 1.9;
+    if (!macroBody) return localAction;
+
+    const reserveNorm = this.getColonyReserve(i) / Math.max(0.001, (this.laws.energyCap ?? 1.5) * (0.75 + Math.max(1, members) * 0.4));
     const energyNorm = Math.min(1.4, this.entities.energy[i] / this.getEffectiveEnergyCap(i));
     const threatPressure = threatCount / Math.max(1, kinCount + threatCount);
     const habitat = this.getEntityScaleHabitat(i);
@@ -915,6 +930,10 @@ export class World {
     const forageDir = (dirRes[bestFood.dir] + dirGlyph[bestFood.dir] * 0.55) >= (dirRes[bestTrail.dir] + dirGlyph[bestTrail.dir] * 0.55)
       ? bestFood.dir
       : bestTrail.dir;
+    const cortex = this.getColonyCortex(i);
+    const localResource = this.resources[this.entities.y[i] * this.gridW + this.entities.x[i]];
+    const ambientRichness = localResource * 0.65 + (dirRes[0] + dirRes[1] + dirRes[2] + dirRes[3]) * 0.0875;
+    const depletedPatch = ambientRichness < 0.16 && bestFood.value < 0.10 && bestTrail.value < 0.06;
 
     const embattled = threatPressure > 0.24 || bestThreat.value > 0.08;
     const hungry = reserveNorm < 0.24 || energyNorm < 0.56;
@@ -922,6 +941,7 @@ export class World {
     const territorial = territoryRadius > bodyRadius && macroScale > 0.34;
 
     if (embattled && bestThreat.value > 0.04) {
+      this.maintainColonyCortex(i, huntDir, 0.36 + threatPressure * 0.42, 0.92);
       if (localAction === ActionType.ATTACK || this.rng.random() < commandStrength * 0.65) {
         return ActionType.ATTACK;
       }
@@ -932,6 +952,7 @@ export class World {
 
     if (hungry) {
       const localRich = this.resources[this.entities.y[i] * this.gridW + this.entities.x[i]] > 0.16;
+      this.maintainColonyCortex(i, forageDir, 0.24 + Math.max(0, 0.22 - ambientRichness) * 1.3, 0.94);
       if (localRich && this.rng.random() < commandStrength * 0.55) return ActionType.EAT;
       if ((bestFood.value > 0.08 || bestTrail.value > 0.05) && this.rng.random() < commandStrength * 0.60) {
         return this.moveActionForDir(forageDir);
@@ -939,6 +960,7 @@ export class World {
     }
 
     if (territorial && !embattled && reserveNorm > 0.26) {
+      this.maintainColonyCortex(i, bestComm.dir, 0.14 + macroScale * 0.18, 0.95);
       if (bestComm.value > 0.06 && this.rng.random() < commandStrength * 0.36) return ActionType.SIGNAL;
       if ((bestTrail.value > 0.04 || localSignal < 0.10) && this.rng.random() < commandStrength * 0.34) return ActionType.DEPOSIT;
       if (this.rng.random() < commandStrength * 0.20) return this.moveActionForDir(bestComm.dir);
@@ -950,16 +972,38 @@ export class World {
     }
 
     if (macroScale > 0.44 && reserveNorm > 0.18) {
-      const roamDir = bestThreat.value > 0.05
+      let roamDir = bestThreat.value > 0.05
         ? huntDir
         : (bestFood.value + bestTrail.value * 0.4 >= bestComm.value ? forageDir : bestComm.dir);
+      if (bestThreat.value <= 0.05 && bestFood.value < 0.05 && bestTrail.value < 0.04 && bestComm.value < 0.04) {
+        roamDir = cortex.dir >= 0 ? cortex.dir : this.directionFromVector(this.entities.actionDx[i], this.entities.actionDy[i], (this.tick + i) & 3);
+      }
       const roamPressure =
         bestThreat.value * 1.15 +
         bestFood.value * 0.75 +
         bestTrail.value * 0.35 +
         bestComm.value * 0.25;
-      if (roamPressure > 0.04 && this.rng.random() < commandStrength * (0.18 + macroScale * 0.28)) {
-        return this.moveActionForDir(roamDir);
+      const roamUrgency =
+        0.10
+        + Math.max(0, macroScale - 0.34) * 0.36
+        + Math.max(0, 0.18 - ambientRichness) * 0.95
+        + (depletedPatch ? 0.16 : 0)
+        + roamPressure * 0.30
+        + (territoryRadius > bodyRadius ? 0.06 : 0);
+      const macroCortex = this.maintainColonyCortex(i, roamDir, roamUrgency, 0.965);
+      if (
+        (roamPressure > 0.04 || depletedPatch || macroCortex.urge > 0.18)
+        && this.rng.random() < commandStrength * (0.22 + macroCortex.urge * 0.48)
+      ) {
+        return this.moveActionForDir(macroCortex.dir >= 0 ? macroCortex.dir : roamDir);
+      }
+    }
+
+    if (macroBody && cortex.urge > 0.24 && !embattled) {
+      const driftDir = cortex.dir >= 0 ? cortex.dir : this.directionFromVector(this.entities.actionDx[i], this.entities.actionDy[i], (this.tick + i) & 3);
+      const refreshed = this.maintainColonyCortex(i, driftDir, cortex.urge * 0.93, 0.975);
+      if (refreshed.urge > 0.20 && this.rng.random() < commandStrength * (0.16 + refreshed.urge * 0.42)) {
+        return this.moveActionForDir(refreshed.dir >= 0 ? refreshed.dir : driftDir);
       }
     }
 
@@ -977,6 +1021,46 @@ export class World {
     const members = Math.max(1, this.colonyMembers[root]);
     const reserveCap = capBase * (0.85 + members * 0.55);
     this.entities.memory[root * MAX_MEMORY_SIZE + COLONY_RESERVE_SLOT] = Math.max(0, Math.min(reserveCap, value));
+  }
+
+  private isMacroBodyController(i: number): boolean {
+    if (i < 0 || !this.entities.alive[i]) return false;
+    const members = Math.max(1, this.colonyMembers[i] || 1);
+    return members > 1 || this.getBodyRadius(i) > 0 || this.entities.size[i] >= 1.9;
+  }
+
+  private getColonyCortex(root: number): { dir: number; urge: number } {
+    if (root < 0 || !this.entities.alive[root]) return { dir: -1, urge: 0 };
+    const mOff = root * MAX_MEMORY_SIZE;
+    const rawDir = Math.round(this.entities.memory[mOff + COLONY_CORTEX_DIR_SLOT] ?? -1);
+    const dir = rawDir >= 0 && rawDir < 4 ? rawDir : -1;
+    const urge = Math.max(0, Math.min(1, this.entities.memory[mOff + COLONY_CORTEX_URGE_SLOT] || 0));
+    return { dir, urge };
+  }
+
+  private setColonyCortex(root: number, dir: number, urge: number): { dir: number; urge: number } {
+    if (root < 0 || !this.entities.alive[root]) return { dir: -1, urge: 0 };
+    const mOff = root * MAX_MEMORY_SIZE;
+    const nextDir = dir >= 0 && dir < 4 ? dir : -1;
+    const nextUrge = Math.max(0, Math.min(1, urge));
+    this.entities.memory[mOff + COLONY_CORTEX_DIR_SLOT] = nextDir;
+    this.entities.memory[mOff + COLONY_CORTEX_URGE_SLOT] = nextUrge;
+    return { dir: nextDir, urge: nextUrge };
+  }
+
+  private directionFromVector(dx: number, dy: number, fallback: number = 0): number {
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    if (adx < 1e-4 && ady < 1e-4) return fallback;
+    if (adx >= ady) return dx >= 0 ? 1 : 3;
+    return dy >= 0 ? 2 : 0;
+  }
+
+  private maintainColonyCortex(root: number, preferredDir: number, targetUrge: number, decay: number): { dir: number; urge: number } {
+    const current = this.getColonyCortex(root);
+    const nextDir = preferredDir >= 0 ? preferredDir : current.dir;
+    const nextUrge = Math.max(0, Math.min(1, Math.max(current.urge * decay, targetUrge)));
+    return this.setColonyCortex(root, nextDir, nextUrge);
   }
 
   private alignWithColonyCommand(i: number, localAction: ActionType, kinCount: number, threatCount: number): ActionType {
@@ -1157,6 +1241,18 @@ export class World {
         for (let h = 0; h < NN_HIDDEN; h++) {
           entities.memory[rootMemOff + h] = entities.memory[rootMemOff + h] * 0.88 + entities.memory[victimMemOff + h] * 0.12;
         }
+
+        const fusionDir = this.directionFromVector(
+          entities.actionDx[root] * 0.62 + entities.actionDx[victim] * 0.38,
+          entities.actionDy[root] * 0.62 + entities.actionDy[victim] * 0.38,
+          this.getColonyCortex(root).dir >= 0 ? this.getColonyCortex(root).dir : (this.tick + root) & 3,
+        );
+        const previousCortex = this.getColonyCortex(root);
+        this.setColonyCortex(
+          root,
+          fusionDir,
+          Math.max(previousCortex.urge * 0.82, 0.32 + context.coordination * 0.24 + context.stress * 0.18 + reserveNorm * 0.14),
+        );
 
         const fusionCap = this.getEffectiveEnergyCap(root) * 1.15;
         entities.energy[root] = Math.min(fusionCap, entities.energy[root]);
