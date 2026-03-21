@@ -593,11 +593,10 @@ export class WorldRenderer {
       const v = f.resources[i];
       const p = f.poison[i];
       const g = f.glyphs?.[i] ?? 0;
-      const b = f.body?.[i] ?? 0;
       resData[i*4]   = v;            // R: resource
       resData[i*4+1] = p;            // G: poison concentration
       resData[i*4+2] = g;            // B: glyph magnitude
-      resData[i*4+3] = b;            // A: macro-body occupancy
+      resData[i*4+3] = 0;            // A: rebuilt from live entity state below
     }
 
     // ── Entity texture — evolving bacterial morphology ─────────────────────
@@ -624,6 +623,28 @@ export class WorldRenderer {
       const bodyRadius = Math.max(0, f.entityBodyRadius?.[e] ?? 0);
       const macroMass = Math.min(1, Math.max(0, colonyMass - 1) / 8);
       const sizeMul = Math.max(0.75, Math.min(5.0, ((f.entitySize?.[e] ?? 102) / 255) * 5)) * (1 + macroMass * 0.18 + bodyRadius * 0.08);
+
+      const macroRadius = Math.max(
+        0,
+        bodyRadius + (macroMass > 0.08 ? 1 : 0) + Math.floor(Math.max(0, sizeMul - 1.8) * 0.35),
+      );
+      if (macroRadius > 0) {
+        const centerX = f.entityX[e];
+        const centerY = f.entityY[e];
+        const macroStrength = Math.min(255, Math.round((0.26 + macroMass * 0.46 + bodyRadius * 0.08) * 255));
+        for (let dy = -macroRadius; dy <= macroRadius; dy++) {
+          for (let dx = -macroRadius; dx <= macroRadius; dx++) {
+            const dist2 = dx * dx + dy * dy;
+            if (dist2 > macroRadius * macroRadius + 1) continue;
+            const nx = ((centerX + dx) % W + W) % W;
+            const ny = ((centerY + dy) % H + H) % H;
+            const fade = 1 - Math.sqrt(dist2) / (macroRadius + 0.35);
+            const alpha = Math.max(0, Math.min(255, Math.round(macroStrength * fade)));
+            const ri = (ny * W + nx) * 4 + 3;
+            if (resData[ri] < alpha) resData[ri] = alpha;
+          }
+        }
+      }
 
       // Write trail — motile entities leave stronger trails
       const ti = f.entityY[e] * W + f.entityX[e];
