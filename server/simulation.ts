@@ -77,7 +77,7 @@ const EVAL_CONFIG = {
 
 const DISPLAY_CONFIG = {
   gridSize:        256,
-  initialEntities: 560,  // keep the display rich, but stop seeding the live world into instant dense soup
+  initialEntities: 800,  // match eval density again; the perf fix now comes from culling and worker reservation
   minLifetimeTicks: 240,
   fieldFrameInterval: 6, // 30fps entities, 5fps field refresh
   fieldDownsample: 2,
@@ -91,8 +91,8 @@ const DISPLAY_PREFLIGHT_CONFIG = {
   minAliveFraction: 0.9,
   minFinalPopulation: 48,
   minMeanPopulation: 100,
-  maxMeanPopulation: 720,
-  maxAvgTickMs: 16,
+  maxMeanPopulation: 960,
+  maxAvgTickMs: 18,
   minFit: 0.42,
   promotionMargin: 0.05,
 };
@@ -1036,21 +1036,25 @@ export class SimulationController {
   }
 
   private buildDisplayLaws(laws: WorldLaws, safetyTier = this.displayExtinctions): WorldLaws {
-    const boundedTier = Math.min(4, safetyTier);
+    const rescueTier = Math.min(5, safetyTier);
     return {
       ...laws,
-      disasterProbability: Math.min(laws.disasterProbability, 0.0025 + boundedTier * 0.0005),
+      disasterProbability: Math.min(laws.disasterProbability, 0.0025 + rescueTier * 0.0005),
       attackTransfer: Math.min(laws.attackTransfer, 0.55),
-      carryingCapacity: clampRange(laws.carryingCapacity, 0.06 + boundedTier * 0.003, 0.10 + boundedTier * 0.005),
-      resourceRegenRate: Math.max(laws.resourceRegenRate, 0.018 + boundedTier * 0.003),
-      offspringEnergy: Math.max(laws.offspringEnergy, 0.16 + boundedTier * 0.02),
-      deathToxin: Math.min(laws.deathToxin, 0.55),
-      fusionRate: Math.min(laws.fusionRate, 0.0008 + boundedTier * 0.0004),
+      carryingCapacity: Math.max(laws.carryingCapacity, 0.09 + rescueTier * 0.008),
+      resourceRegenRate: Math.max(laws.resourceRegenRate, 0.024 + rescueTier * 0.004),
+      eatGain: Math.max(laws.eatGain, 0.48 + rescueTier * 0.02),
+      offspringEnergy: Math.max(laws.offspringEnergy, 0.18 + rescueTier * 0.025),
+      energyCap: Math.max(laws.energyCap, 1.0 + rescueTier * 0.12),
+      moveCost: Math.min(laws.moveCost, 0.012 + rescueTier * 0.001),
+      idleCost: Math.min(laws.idleCost, 0.010 + rescueTier * 0.0008),
+      deathToxin: Math.min(laws.deathToxin, 0.45),
+      fusionRate: Math.min(laws.fusionRate, 0.0012 + rescueTier * 0.0004),
       fusionThreshold: Math.max(6, laws.fusionThreshold),
       cellSizeMax: clampRange(laws.cellSizeMax, 1.35, 3.5),
       sizeMaintenance: Math.max(laws.sizeMaintenance, 0.0006),
-      agingRate: Math.max(laws.agingRate, 0.00045 + boundedTier * 0.00008),
-      maxAge: Math.min(laws.maxAge, 1200 - boundedTier * 90),
+      agingRate: Math.min(laws.agingRate, 0.0012),
+      maxAge: clampRange(laws.maxAge, 900, 1600 + rescueTier * 120),
     };
   }
 
@@ -1179,11 +1183,11 @@ export class SimulationController {
   startDisplayWorld(laws: WorldLaws, preserveExtinctionCount = false) {
     if (!preserveExtinctionCount) this.displayExtinctions = 0;
     this.displaySeed  = this.evalRng.int(0, 0x7fffffff);
-    const safetyTier = Math.min(4, this.displayExtinctions);
+    const safetyTier = Math.min(5, this.displayExtinctions);
     const displayPhysics = this.buildDisplayLaws(laws, safetyTier);
     const coldStart = !this.bestLaws && !this.showcaseLaws && this.generation === 0;
-    const baseEntities = coldStart ? Math.round(DISPLAY_CONFIG.initialEntities * 0.72) : DISPLAY_CONFIG.initialEntities;
-    const initialEntities = Math.max(coldStart ? 280 : 360, baseEntities - safetyTier * 70);
+    const baseEntities = coldStart ? Math.round(DISPLAY_CONFIG.initialEntities * 0.78) : DISPLAY_CONFIG.initialEntities;
+    const initialEntities = Math.max(coldStart ? 560 : 720, baseEntities + safetyTier * 32);
     this.displayWorld = new World(
       displayPhysics,
       { gridSize: DISPLAY_CONFIG.gridSize, steps: 999999, initialEntities },
