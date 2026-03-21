@@ -949,6 +949,20 @@ export class World {
       if (this.rng.random() < commandStrength * 0.18) return ActionType.SIGNAL;
     }
 
+    if (macroScale > 0.44 && reserveNorm > 0.18) {
+      const roamDir = bestThreat.value > 0.05
+        ? huntDir
+        : (bestFood.value + bestTrail.value * 0.4 >= bestComm.value ? forageDir : bestComm.dir);
+      const roamPressure =
+        bestThreat.value * 1.15 +
+        bestFood.value * 0.75 +
+        bestTrail.value * 0.35 +
+        bestComm.value * 0.25;
+      if (roamPressure > 0.04 && this.rng.random() < commandStrength * (0.18 + macroScale * 0.28)) {
+        return this.moveActionForDir(roamDir);
+      }
+    }
+
     return localAction;
   }
 
@@ -1181,6 +1195,18 @@ export class World {
       if (this.colonyRoot[neighbor] === root) return true;
     }
     return false;
+  }
+
+  private canSwapWithinColony(i: number, mate: number, nx: number, ny: number): boolean {
+    const { entities } = this;
+    if (mate < 0 || mate === i || !entities.alive[mate]) return false;
+    const root = this.colonyRoot[i];
+    if (root < 0 || root !== this.colonyRoot[mate] || this.colonyMembers[root] <= 1) return false;
+    if (!this.footprintAllowsEntity(i, nx, ny)) return false;
+
+    const ox = entities.x[i];
+    const oy = entities.y[i];
+    return this.colonyMoveMaintainsContact(mate, ox, oy);
   }
 
   private getLocalColonySupport(i: number): number {
@@ -1634,11 +1660,20 @@ export class World {
     const ox = entities.x[i];
     const oy = entities.y[i];
     let finalX = ox, finalY = oy;
+    let swapMate = -1;
     let territoryPenalty = 0;
     for (let s = 1; s <= speed; s++) {
       const nx = ((ox + dx * s) % gridW + gridW) % gridW;
       const ny = ((oy + dy * s) % gridH + gridH) % gridH;
-      if (entityMap[ny * gridW + nx] >= 0) break;
+      const occupant = entityMap[ny * gridW + nx];
+      if (occupant >= 0) {
+        if (s === 1 && this.canSwapWithinColony(i, occupant, nx, ny)) {
+          swapMate = occupant;
+          finalX = nx;
+          finalY = ny;
+        }
+        break;
+      }
       const footprintOwner = bodyMap[ny * gridW + nx];
       if (footprintOwner >= 0 && !this.isSameBodyAlliance(i, footprintOwner)) break;
       const territoryOwner = territoryMap[ny * gridW + nx];
@@ -1664,11 +1699,19 @@ export class World {
         entities.energy[i] -= moveCost * 0.35;
         return;
       }
-      if (!this.footprintAllowsEntity(i, finalX, finalY)) {
+      if (swapMate < 0 && !this.footprintAllowsEntity(i, finalX, finalY)) {
         entities.energy[i] -= moveCost * 0.35;
         return;
       }
-      entityMap[oy * gridW + ox] = -1;
+      if (swapMate >= 0) {
+        entities.x[swapMate] = ox;
+        entities.y[swapMate] = oy;
+        entities.actionDx[swapMate] = -dx;
+        entities.actionDy[swapMate] = -dy;
+        entityMap[oy * gridW + ox] = swapMate;
+      } else {
+        entityMap[oy * gridW + ox] = -1;
+      }
       entities.x[i]      = finalX;
       entities.y[i]      = finalY;
       entityMap[finalY * gridW + finalX] = i;
